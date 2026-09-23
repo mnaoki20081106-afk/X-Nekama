@@ -1,0 +1,5 @@
+{
+  "name":"x-nekama","version":"1.0.0","private":true,"type":"module",
+  "engines":{"node":">=24"},
+  "scripts":{"start":"node server.mjs","dev":"node --watch server.mjs","test":"node --test"}
+}
