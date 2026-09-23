@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS assets (
 );
 CREATE TABLE IF NOT EXISTS drafts (
  id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
- text TEXT NOT NULL, image_style TEXT, image_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+ text TEXT NOT NULL, image_style TEXT, image_prompt TEXT DEFAULT '', image_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
  status TEXT NOT NULL DEFAULT 'needs_review' CHECK(status IN ('needs_review','scheduled','publishing','posted','failed')),
  scheduled_at TEXT, posted_at TEXT, x_post_id TEXT, error TEXT, attempt_count INTEGER DEFAULT 0,
  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
@@ -45,6 +45,7 @@ CREATE INDEX IF NOT EXISTS drafts_due ON drafts(status,scheduled_at);
 CREATE INDEX IF NOT EXISTS ref_posts_ref ON ref_posts(ref_id);
 `);
 if (!db.prepare('PRAGMA table_info(accounts)').all().some(c=>c.name==='auto_approve')) db.exec('ALTER TABLE accounts ADD COLUMN auto_approve INTEGER DEFAULT 0');
+if (!db.prepare('PRAGMA table_info(drafts)').all().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
 export const uid=()=>crypto.randomUUID();
 export const row=(sql,...args)=>db.prepare(sql).get(...args);
 export const all=(sql,...args)=>db.prepare(sql).all(...args);
