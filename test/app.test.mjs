@@ -28,7 +28,13 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
   const image=await fetch(root+'/api/assets/'+asset,{headers:{cookie}});assert.equal(image.status,200);assert.equal(image.headers.get('content-type'),'image/png');
   r=await send(`/api/drafts/${draft}`,'PATCH',{text:'編集した投稿',image_style:'selfie'});assert.equal(r.res.status,200);
   r=await send('/api/state');assert.equal(r.json.drafts[0].text,'編集した投稿');assert.match(r.json.drafts[0].image_prompt,/編集した投稿/);
-  r=await send(`/api/drafts/${draft}/image`,'POST');assert.equal(r.res.status,400);
+  r=await send(`/api/drafts/${draft}/image`,'POST',{name:'個別投稿画像',data:png});assert.equal(r.res.status,201);
+  r=await send('/api/state');assert.ok(r.json.drafts[0].image_id);assert.equal(r.json.assets.filter(a=>a.category==='uploaded').length,1);
+  r=await send(`/api/drafts/${draft}`,'PATCH',{image_style:'mirror'});assert.equal(r.res.status,200);
+  r=await send('/api/state');assert.equal(r.json.drafts[0].image_id,null);assert.equal(r.json.assets.filter(a=>a.category==='uploaded').length,0);
+  r=await send(`/api/drafts/${draft}/image`,'POST',{name:'差し替え画像',data:png});assert.equal(r.res.status,201);
+  r=await send(`/api/drafts/${draft}/image`,'DELETE');assert.equal(r.res.status,200);
+  r=await send('/api/state');assert.equal(r.json.drafts[0].image_id,null);
   r=await send('/api/drafts/images/bulk','POST',{items:[{draft_id:draft,name:'投稿画像',data:png}]});assert.equal(r.res.status,201);
   r=await send('/api/state');assert.ok(r.json.drafts[0].image_id);
   r=await send('/api/drafts/images/bulk','POST',{items:[{draft_id:draft,data:png},{draft_id:draft,data:png}]});assert.equal(r.res.status,400);
