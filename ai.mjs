@@ -1,6 +1,3 @@
-import {readFile,writeFile} from 'node:fs/promises';
-import {join} from 'node:path';
-import {all,run,uid,dataDir} from './db.mjs';
 const key=()=>{if(!process.env.GEMINI_API_KEY)throw new Error('GEMINI_API_KEY が未設定です');return process.env.GEMINI_API_KEY};
 async function request(model,parts,config={}){
  const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),120000);
@@ -43,23 +40,4 @@ export async function generateWeek(account,refs,history,start,count=7){
  }
  if(!posts.length)throw new Error('有効な投稿案を生成できませんでした。設定を見直して再生成してください');
  return posts;
-}
-async function imagePart(asset){const bytes=await readFile(join(dataDir,'assets',asset.filename));return {inlineData:{mimeType:asset.mime,data:bytes.toString('base64')}}}
-export async function generateImage(account,draft){
- const base=all("SELECT * FROM assets WHERE kind='base' AND account_id=? ORDER BY created_at DESC LIMIT 1",account.id)[0];
- if(!base)throw new Error('先にキャラクターの基準画像を登録してください');
- const styles=all("SELECT * FROM assets WHERE kind='style' AND category=? ORDER BY created_at DESC LIMIT 2",draft.image_style);
- const parts=[{text:`Create one high-quality, original image of an explicitly fictional AI adult character. The FIRST reference image defines the character's recurring adult facial traits, hair, and identity. Subsequent references guide only the photographic treatment, not the identity. Image style: ${draft.image_style}. Mood and context: ${draft.text}. Natural lighting, believable textures, coherent hands and reflections, no logos, no text, no real person's identity, no imitation of a real person's exact likeness. Keep the same fictional face across generations. For BeReal-inspired framing, create a casual dual-camera feel without the BeReal logo or claims of an actual capture.`},await imagePart(base),...await Promise.all(styles.map(imagePart))];
- const out=await request(process.env.GEMINI_IMAGE_MODEL||'gemini-3.1-flash-image',parts,{responseModalities:['IMAGE']});
- const part=out.find(p=>p.inlineData?.data);
- if(!part)throw new Error('Gemini が画像を返しませんでした');
- const mime=part.inlineData.mimeType;
- if(!['image/png','image/jpeg','image/webp'].includes(mime))throw new Error(`未対応の画像形式: ${mime}`);
- const bytes=Buffer.from(part.inlineData.data,'base64');
- if(bytes.length>5*1024*1024)throw new Error('生成画像がXの投稿上限を超えました。別の画像を生成してください');
- const ext={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}[mime];
- const id=uid(), filename=`${id}.${ext}`;
- await writeFile(join(dataDir,'assets',filename),bytes,{flag:'wx',mode:0o600});
- run("INSERT INTO assets(id,kind,category,account_id,name,mime,filename) VALUES(?,'style',?,?,?, ?,?)",id,'generated',account.id,'生成画像',mime,filename);
- return id;
 }
