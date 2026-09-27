@@ -11,6 +11,11 @@ const configPath=join(here,'wrangler.toml');
 const keyPath=join(here,'.token-encryption-key');
 const wrangler=['--yes','wrangler@4'];
 const doctor=process.argv.includes('--doctor');
+const nodeMajor=Number(process.versions.node.split('.')[0]);
+if(!Number.isInteger(nodeMajor)||nodeMajor<24){
+ console.error('[X-Nekama] Node.js 24以上が必要です。現在: '+process.versions.node);
+ process.exit(1);
+}
 
 function run(args,{allowFailure=false,input=null,quiet=false}={}){
  return new Promise((resolve,reject)=>{
@@ -70,7 +75,12 @@ async function ensureLogin(){
  let who=await run(['whoami','--json'],{allowFailure:true,quiet:true});
  if(who.code===0)return parseJson(who.out||who.err);
  note('Cloudflareへのログインが必要です。ブラウザが開きます。');
- await runInteractive(['login','--use-keyring']);
+ try{
+  await runInteractive(['login','--use-keyring']);
+ }catch{
+  note('OSキーチェーン方式を利用できないため、通常のWranglerログインへ切り替えます。');
+  await runInteractive(['login']);
+ }
  who=await run(['whoami','--json'],{quiet:true});
  return parseJson(who.out||who.err);
 }
