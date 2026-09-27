@@ -2,11 +2,17 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
+#include <string.h>
 
 static const void *kNXButtonKey = &kNXButtonKey;
 static const void *kNXHelperKey = &kNXHelperKey;
 static NSMutableDictionary<NSString *, NSValue *> *NXOriginalViewDidAppear;
 static NSMutableSet<NSString *> *NXHookedClasses;
+static NSMutableDictionary<NSString *, NSValue *> *NXOriginalGrokAttachmentDidAdd;
+static NSMutableSet<NSString *> *NXHookedGrokAttachmentClasses;
+static NSString *NXLastGrokAttachmentEvent;
+static NSString * const NXGrokAttachmentNotification =
+    @"com.xnekama.grokImagineAttachmentDidAdd";
 
 static NSString *NXClassName(id object) {
     return object ? NSStringFromClass(object_getClass(object)) : @"";
@@ -115,6 +121,55 @@ static NSArray<NSString *> *NXClassesImplementingSelector(SEL selector) {
     return matches;
 }
 
+static IMP NXStoredIMPForObject(
+    id object,
+    NSDictionary<NSString *, NSValue *> *implementations
+) {
+    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+        NSValue *value = implementations[NSStringFromClass(cls)];
+        if (!value) continue;
+        IMP implementation = NULL;
+        [value getValue:&implementation size:sizeof(implementation)];
+        if (implementation) return implementation;
+    }
+    return NULL;
+}
+
+static Method NXOwnInstanceMethod(Class cls, SEL selector) {
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method result = NULL;
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) {
+            result = methods[i];
+            break;
+        }
+    }
+    free(methods);
+    return result;
+}
+
+static char NXUnqualifiedTypeCode(const char *type) {
+    if (!type) return '\0';
+    while (*type && strchr("rnNoORV", *type)) type++;
+    return *type;
+}
+
+static BOOL NXIsExpectedGrokAttachmentCallback(Method method) {
+    if (!method || method_getNumberOfArguments(method) != 5) return NO;
+
+    char returnType[32] = {0};
+    method_getReturnType(method, returnType, sizeof(returnType));
+    if (NXUnqualifiedTypeCode(returnType) != 'v') return NO;
+
+    for (unsigned int index = 2; index < 5; index++) {
+        char argumentType[128] = {0};
+        method_getArgumentType(method, index, argumentType, sizeof(argumentType));
+        if (NXUnqualifiedTypeCode(argumentType) != '@') return NO;
+    }
+    return YES;
+}
+
 static NSString *NXRuntimeReport(UIViewController *composer) {
     NSBundle *bundle = NSBundle.mainBundle;
     NSString *version = [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?";
@@ -135,8 +190,12 @@ static NSString *NXRuntimeReport(UIViewController *composer) {
     NSArray *imagePromptClasses =
         NXClassesImplementingSelector(NSSelectorFromString(@"postComposerImageGenWithPrompt"));
 
+    NSString *lastAttachment = NXLastGrokAttachmentEvent.length
+        ? NXLastGrokAttachmentEvent
+        : @"none";
+
     return [NSString stringWithFormat:
-        @"X %@ (%@)\nComposer: %@\n\nGrok Imagine\nButton class: %@\nToolbar class: %@\nPresentationManager: %@\nVisible native button: %@\n\nNative postComposerTextGen:\n%@\n\nNative postComposerImageGen:\n%@\n\nNative postComposerImageGenWithPrompt:\n%@\n\nAttachment delegate classes:\n%@\n\nPrompt delegate classes:\n%@",
+        @"X %@ (%@)\nComposer: %@\n\nGrok Imagine\nButton class: %@\nToolbar class: %@\nPresentationManager: %@\nVisible native button: %@\n\nNative postComposerTextGen:\n%@\n\nNative postComposerImageGen:\n%@\n\nNative postComposerImageGenWithPrompt:\n%@\n\nAttachment delegate classes:\n%@\n\nPrompt delegate classes:\n%@\n\nLast observed Grok attachment:\n%@",
         version, build, NSStringFromClass(composer.class),
         imagineButton ? @"YES" : @"NO",
         imagineToolbar ? @"YES" : @"NO",
@@ -146,7 +205,8 @@ static NSString *NXRuntimeReport(UIViewController *composer) {
         imageGenClasses.count ? [imageGenClasses componentsJoinedByString:@"\n"] : @"none",
         imagePromptClasses.count ? [imagePromptClasses componentsJoinedByString:@"\n"] : @"none",
         attachmentDelegates.count ? [attachmentDelegates componentsJoinedByString:@"\n"] : @"none",
-        promptDelegates.count ? [promptDelegates componentsJoinedByString:@"\n"] : @"none"];
+        promptDelegates.count ? [promptDelegates componentsJoinedByString:@"\n"] : @"none",
+        lastAttachment];
 }
 
 static void NXOpenGrokWithPrompt(NSString *prompt) {
@@ -311,6 +371,77 @@ static void NXAttachButton(UIViewController *controller) {
     NSLog(@"[X-Nekama] attached to composer %@", NSStringFromClass(controller.class));
 }
 
+static void NXGrokAttachmentDidAdd(
+    id self,
+    SEL _cmd,
+    id manager,
+    id asset,
+    id promptObject
+) {
+    IMP original = NXStoredIMPForObject(self, NXOriginalGrokAttachmentDidAdd);
+    if (original && original != (IMP)NXGrokAttachmentDidAdd) {
+        ((void (*)(id, SEL, id, id, id))original)(
+            self, _cmd, manager, asset, promptObject
+        );
+    }
+
+    NSString *prompt =
+        [promptObject isKindOfClass:NSString.class] ? (NSString *)promptObject : nil;
+    NSString *event = [NSString stringWithFormat:
+        @"delegate=%@ asset=%@ promptLength=%lu",
+        NSStringFromClass([self class]),
+        asset ? NSStringFromClass([asset class]) : @"nil",
+        (unsigned long)prompt.length
+    ];
+
+    @synchronized (NXHookedGrokAttachmentClasses) {
+        NXLastGrokAttachmentEvent = event;
+    }
+
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    userInfo[@"delegateClass"] = NSStringFromClass([self class]);
+    userInfo[@"assetClass"] = asset ? NSStringFromClass([asset class]) : @"nil";
+    if (prompt) userInfo[@"prompt"] = prompt;
+
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:NXGrokAttachmentNotification
+                      object:asset
+                    userInfo:userInfo];
+
+    NSLog(@"[X-Nekama] observed Grok attachment: %@", event);
+}
+
+static void NXHookGrokAttachmentObserverClass(Class cls) {
+    if (!cls) return;
+
+    SEL selector = NSSelectorFromString(
+        @"grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:"
+    );
+    Method method = NXOwnInstanceMethod(cls, selector);
+    if (!NXIsExpectedGrokAttachmentCallback(method)) return;
+
+    NSString *name = NSStringFromClass(cls);
+    @synchronized (NXHookedGrokAttachmentClasses) {
+        if ([NXHookedGrokAttachmentClasses containsObject:name]) return;
+
+        IMP current = method_getImplementation(method);
+        if (current == (IMP)NXGrokAttachmentDidAdd) {
+            [NXHookedGrokAttachmentClasses addObject:name];
+            return;
+        }
+
+        IMP previous = method_setImplementation(
+            method,
+            (IMP)NXGrokAttachmentDidAdd
+        );
+        NXOriginalGrokAttachmentDidAdd[name] =
+            [NSValue value:&previous withObjCType:@encode(IMP)];
+        [NXHookedGrokAttachmentClasses addObject:name];
+
+        NSLog(@"[X-Nekama] observing Grok attachment callback on %@", name);
+    }
+}
+
 static IMP NXOriginalIMPForObject(id object) {
     for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
         NSValue *value = NXOriginalViewDidAppear[NSStringFromClass(cls)];
@@ -364,7 +495,10 @@ static void NXInstallHooks(void) {
         if (count <= 0) return;
         Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
         count = objc_getClassList(classes, count);
-        for (int i = 0; i < count; i++) NXHookComposerClass(classes[i]);
+        for (int i = 0; i < count; i++) {
+            NXHookComposerClass(classes[i]);
+            NXHookGrokAttachmentObserverClass(classes[i]);
+        }
         free(classes);
     });
 }
@@ -377,6 +511,8 @@ __attribute__((constructor)) static void NXBootstrap(void) {
     @autoreleasepool {
         NXOriginalViewDidAppear = [NSMutableDictionary dictionary];
         NXHookedClasses = [NSMutableSet set];
+        NXOriginalGrokAttachmentDidAdd = [NSMutableDictionary dictionary];
+        NXHookedGrokAttachmentClasses = [NSMutableSet set];
         _dyld_register_func_for_add_image(NXImageLoaded);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
