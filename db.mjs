@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS accounts (
  character_name TEXT NOT NULL, age INTEGER, location TEXT DEFAULT '', tone TEXT DEFAULT '',
  personality TEXT DEFAULT '', hobbies TEXT DEFAULT '', bio TEXT DEFAULT '',
  emoji_style TEXT DEFAULT '', ng_topics TEXT DEFAULT '', posting_frequency INTEGER DEFAULT 7,
- activity_frequency TEXT DEFAULT 'normal', active_hours TEXT DEFAULT '10:00-22:00', gender TEXT DEFAULT '', occupation TEXT DEFAULT '', first_person TEXT DEFAULT '',
+ activity_interval_days INTEGER DEFAULT 1, active_hours TEXT DEFAULT '10:00-22:00', gender TEXT DEFAULT '', occupation TEXT DEFAULT '', first_person TEXT DEFAULT '',
  base_image_id TEXT, session_cipher TEXT, api_token_cipher TEXT, session_status TEXT DEFAULT 'unconnected', enabled INTEGER DEFAULT 0,
  auto_approve INTEGER DEFAULT 0, auto_generate_images INTEGER DEFAULT 0,
  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
@@ -55,7 +55,7 @@ if (!accountColumns().some(c=>c.name==='auto_generate_images')) db.exec('ALTER T
 if (!accountColumns().some(c=>c.name==='gender')) db.exec("ALTER TABLE accounts ADD COLUMN gender TEXT DEFAULT ''");
 if (!accountColumns().some(c=>c.name==='occupation')) db.exec("ALTER TABLE accounts ADD COLUMN occupation TEXT DEFAULT ''");
 if (!accountColumns().some(c=>c.name==='first_person')) db.exec("ALTER TABLE accounts ADD COLUMN first_person TEXT DEFAULT ''");
-if (!accountColumns().some(c=>c.name==='activity_frequency')) db.exec("ALTER TABLE accounts ADD COLUMN activity_frequency TEXT DEFAULT 'normal'");
+if (!accountColumns().some(c=>c.name==='activity_interval_days')) db.exec("ALTER TABLE accounts ADD COLUMN activity_interval_days INTEGER DEFAULT 1");
 const draftColumns=()=>db.prepare('PRAGMA table_info(drafts)').all();
 if (!draftColumns().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
 if (!draftColumns().some(c=>c.name==='content_fingerprint')) db.exec("ALTER TABLE drafts ADD COLUMN content_fingerprint TEXT DEFAULT ''");
