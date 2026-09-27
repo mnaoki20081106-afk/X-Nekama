@@ -3,31 +3,36 @@ set -euo pipefail
 
 MODE="${1:---sideloaded}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-IPA="$ROOT/packages/com.atebits.Tweetie2.ipa"
-OUT="$ROOT/packages/X-Nekama"
+IPA="${IPA_PATH:-$ROOT/packages/com.atebits.Tweetie2.ipa}"
 
 cd "$ROOT"
+python3 ./verify_ipa.py "$IPA"
 
 case "$MODE" in
-  --sideloaded)
+  --sideloaded|--trollstore)
     make clean
     rm -rf .theos
     make
 
-    if [[ ! -f "$IPA" ]]; then
-      echo "Missing decrypted IPA: $IPA" >&2
+    DYLIB="$(find .theos/obj -type f -name XNekama.dylib | head -n1)"
+    if [[ -z "$DYLIB" || ! -f "$DYLIB" ]]; then
+      echo "XNekama.dylib was not produced" >&2
       exit 1
     fi
 
     if ! command -v cyan >/dev/null 2>&1; then
-      echo "cyan is required for sideloaded IPA injection." >&2
+      echo "cyan is required for IPA injection (install pyzule-rw)." >&2
       exit 1
     fi
 
-    cyan -i "$IPA" -o "$OUT-sideloaded" --ignore-encrypted \
-      -uwf .theos/obj/debug/XNekama.dylib
+    if [[ "$MODE" == "--trollstore" ]]; then
+      OUT="$ROOT/packages/X-Nekama-X12.29.tipa"
+    else
+      OUT="$ROOT/packages/X-Nekama-X12.29.ipa"
+    fi
 
-    echo "Created: $OUT-sideloaded.ipa"
+    cyan -i "$IPA" -o "$OUT" --ignore-encrypted -uwf "$DYLIB"
+    echo "Created: $OUT"
     ;;
   --rootless)
     make clean
@@ -42,7 +47,7 @@ case "$MODE" in
     make package
     ;;
   *)
-    echo "Usage: $0 [--sideloaded|--rootless|--rootfull]" >&2
+    echo "Usage: $0 [--sideloaded|--trollstore|--rootless|--rootfull]" >&2
     exit 2
     ;;
 esac
