@@ -314,7 +314,11 @@ static void NXAttachButton(UIViewController *controller) {
 static IMP NXOriginalIMPForObject(id object) {
     for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
         NSValue *value = NXOriginalViewDidAppear[NSStringFromClass(cls)];
-        if (value) return value.pointerValue;
+        if (value) {
+            IMP original = NULL;
+            [value getValue:&original size:sizeof(original)];
+            return original;
+        }
     }
     return NULL;
 }
@@ -344,10 +348,10 @@ static void NXHookComposerClass(Class cls) {
         }
         const char *types = method_getTypeEncoding(method);
         if (class_addMethod(cls, selector, (IMP)NXComposerViewDidAppear, types)) {
-            NXOriginalViewDidAppear[name] = [NSValue valueWithPointer:original];
+            NXOriginalViewDidAppear[name] = [NSValue value:&original withObjCType:@encode(IMP)];
         } else {
             IMP previous = method_setImplementation(method, (IMP)NXComposerViewDidAppear);
-            NXOriginalViewDidAppear[name] = [NSValue valueWithPointer:previous];
+            NXOriginalViewDidAppear[name] = [NSValue value:&previous withObjCType:@encode(IMP)];
         }
         [NXHookedClasses addObject:name];
         NSLog(@"[X-Nekama] hooked composer class %@", name);
