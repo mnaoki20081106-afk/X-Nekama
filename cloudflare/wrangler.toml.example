@@ -1,0 +1,46 @@
+name = "x-nekama-public"
+main = "src/index.mjs"
+compatibility_date = "2026-09-27"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "../public"
+binding = "STATIC"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "x-nekama-public"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "x-nekama-media"
+
+[[queues.producers]]
+binding = "TASKS"
+queue = "x-nekama-tasks"
+
+[[queues.consumers]]
+queue = "x-nekama-tasks"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+retry_delay = 60
+dead_letter_queue = "x-nekama-dlq"
+max_concurrency = 4
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+PUBLIC_BASE_URL = "https://REPLACE_WITH_YOUR_DOMAIN"
+X_CLIENT_ID = "REPLACE_WITH_X_OAUTH_CLIENT_ID"
+XAI_TEXT_MODEL = "grok-4.7"
+XAI_IMAGE_MODEL = "grok-imagine-image-2.0"
+
+# Secrets are NEVER written here.
+# Set these with:
+#   npx wrangler secret put XAI_API_KEY
+#   npx wrangler secret put TOKEN_ENCRYPTION_KEY
+#   npx wrangler secret put X_CLIENT_SECRET
