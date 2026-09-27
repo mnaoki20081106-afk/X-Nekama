@@ -3,3 +3,6 @@ data/*
 .env
 node_modules/
 *.log
+cloudflare/.dev.vars
+cloudflare/.env
+cloudflare/wrangler.toml
