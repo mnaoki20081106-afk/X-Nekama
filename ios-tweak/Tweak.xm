@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <PhotosUI/PhotosUI.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 @interface TFNTwitterAccount : NSObject
 - (NSString *)accountID;
@@ -22,6 +23,7 @@
 - (T1TweetComposeSingleTweetViewController *)t1_activeTweetViewController;
 - (void)_t1_openGrokImagineViewControllerWithInitialPrompt:(NSString *)prompt;
 - (void)_t1_syncAIDisclosureForComposition:(TFNTwitterComposition *)composition;
+- (void)setGrokImagineLightboxManager:(id)manager;
 @end
 
 @interface T1GrokTextPostComposerController : UIViewController
@@ -121,6 +123,20 @@ static BOOL XNHasReference(TFNTwitterAccount *account, NSString *kind) {
         [[NSFileManager defaultManager] fileExistsAtPath:path];
 }
 
+static UIImage *XNLoadReferenceImage(TFNTwitterAccount *account, NSString *kind) {
+    NSString *path = XNReferencePath(account, kind);
+    if (path.length == 0) {
+        return nil;
+    }
+
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data.length == 0) {
+        return nil;
+    }
+
+    return [UIImage imageWithData:data];
+}
+
 static NSString *XNProfileSummaryPrompt(NSDictionary *profile) {
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
 
@@ -202,6 +218,7 @@ static void XNShowAlert(UIViewController *presenter,
 @property(nonatomic, strong) TFNTwitterAccount *account;
 @property(nonatomic, strong) NSMutableDictionary *profile;
 @property(nonatomic, copy) NSString *pendingReferenceKind;
+@property(nonatomic, strong) id grokReferenceManager;
 - (instancetype)initWithComposeController:
     (T1TweetComposeViewController *)composeController;
 @end
@@ -243,7 +260,7 @@ static void XNShowAlert(UIViewController *presenter,
     switch (section) {
         case 0: return 2;
         case 1: return 9;
-        case 2: return 2;
+        case 2: return 3;
         case 3: return 3;
         default: return 0;
     }
@@ -317,14 +334,27 @@ static void XNShowAlert(UIViewController *presenter,
     }
 
     if (indexPath.section == 2) {
-        NSString *kind =
-            indexPath.row == 0 ? @"face" : @"phone_case";
-        cell.textLabel.text =
-            indexPath.row == 0 ? @"顔参考画像" : @"スマホケース画像";
-        cell.detailTextLabel.text =
-            XNHasReference(self.account, kind) ? @"登録済み" : @"未設定";
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        if (indexPath.row < 2) {
+            NSString *kind =
+                indexPath.row == 0 ? @"face" : @"phone_case";
+            cell.textLabel.text =
+                indexPath.row == 0 ? @"顔参考画像" : @"スマホケース画像";
+            cell.detailTextLabel.text =
+                XNHasReference(self.account, kind) ? @"登録済み" : @"未設定";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        } else {
+            cell.textLabel.text = @"登録画像をGrokで開く";
+            NSUInteger count =
+                (XNHasReference(self.account, @"face") ? 1 : 0) +
+                (XNHasReference(self.account, @"phone_case") ? 1 : 0);
+            cell.detailTextLabel.text =
+                count > 0
+                    ? [NSString stringWithFormat:@"%lu枚", (unsigned long)count]
+                    : @"画像なし";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        }
         return cell;
     }
 
@@ -457,6 +487,93 @@ static void XNShowAlert(UIViewController *presenter,
     }];
 }
 
+- (void)xn_openSavedReferencesInGrok {
+    NSMutableArray<UIImage *> *images = [NSMutableArray array];
+
+    UIImage *face = XNLoadReferenceImage(self.account, @"face");
+    UIImage *phoneCase = XNLoadReferenceImage(self.account, @"phone_case");
+
+    if (face) {
+        [images addObject:face];
+    }
+    if (phoneCase) {
+        [images addObject:phoneCase];
+    }
+
+    if (images.count == 0) {
+        XNShowAlert(self,
+                    @"参考画像がありません",
+                    @"顔写真かスマホケース画像を先に登録してください。");
+        return;
+    }
+
+    Class managerClass =
+        NSClassFromString(@"Grok.GrokImagineLightboxPresentationManager");
+    if (!managerClass) {
+        managerClass =
+            NSClassFromString(@"_TtC4Grok38GrokImagineLightboxPresentationManager");
+    }
+
+    if (!managerClass) {
+        XNShowAlert(self,
+                    @"Grok画像編集を開けません",
+                    @"X 12.29のGrok Imagine Lightboxが見つかりません。");
+        return;
+    }
+
+    id manager = [managerClass alloc];
+    SEL accountInit = NSSelectorFromString(@"initWithAccount:entryPoint:");
+
+    if ([manager respondsToSelector:accountInit]) {
+        typedef id (*XNInitWithAccountFn)(id, SEL, id, NSInteger);
+        manager =
+            ((XNInitWithAccountFn)objc_msgSend)(
+                manager, accountInit, self.account, 5);
+    } else {
+        manager = [manager init];
+    }
+
+    SEL presentSelector =
+        NSSelectorFromString(
+            @"presentWithSourceImages:sourceType:from:sourceView:id:animated:");
+
+    if (!manager || ![manager respondsToSelector:presentSelector]) {
+        XNShowAlert(self,
+                    @"Grok画像編集を開けません",
+                    @"必要なGrok Imagineメソッドが見つかりません。");
+        return;
+    }
+
+    self.grokReferenceManager = manager;
+
+    T1TweetComposeViewController *compose = self.composeController;
+    if ([compose respondsToSelector:@selector(setGrokImagineLightboxManager:)]) {
+        [compose setGrokImagineLightboxManager:manager];
+    }
+
+    NSArray<UIImage *> *sourceImages = [images copy];
+
+    [self dismissViewControllerAnimated:YES completion:^{
+        UIViewController *presenter =
+            compose.navigationController ?: compose;
+        UIView *sourceView = compose.view;
+
+        typedef void (*XNPresentSourceImagesFn)(
+            id, SEL, NSArray *, NSInteger, UIViewController *,
+            UIView *, NSString *, BOOL);
+
+        ((XNPresentSourceImagesFn)objc_msgSend)(
+            manager,
+            presentSelector,
+            sourceImages,
+            3,
+            presenter,
+            sourceView,
+            nil,
+            YES);
+    }];
+}
+
 - (void)xn_presentNativeGrokTextWithInitialText:(NSString *)initialText {
     Class grokClass =
         NSClassFromString(@"T1GrokTextPostComposerController");
@@ -586,8 +703,13 @@ static void XNShowAlert(UIViewController *presenter,
     }
 
     if (indexPath.section == 2) {
-        [self xn_pickReference:
-            indexPath.row == 0 ? @"face" : @"phone_case"];
+        if (indexPath.row == 0) {
+            [self xn_pickReference:@"face"];
+        } else if (indexPath.row == 1) {
+            [self xn_pickReference:@"phone_case"];
+        } else {
+            [self xn_openSavedReferencesInGrok];
+        }
         return;
     }
 
@@ -606,8 +728,8 @@ static void XNShowAlert(UIViewController *presenter,
  titleForFooterInSection:(NSInteger)section {
     if (section == 2) {
         return @"参考画像はアカウント別にXのアプリ領域へ保存します。"
-                "X 12.29のGrok Imagineへ画像ファイル自体を安全に渡す経路は"
-                "まだ接続していないため、現段階では保存のみです。";
+                "「登録画像をGrokで開く」は、X 12.29自身が画像編集で使う"
+                "Grok Imagine LightboxのsourceImages経路へ登録画像を渡します。";
     }
 
     if (section == 3) {
