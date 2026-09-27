@@ -1,0 +1,9 @@
+Package: com.xnekama.tweak
+Name: X-Nekama
+Depends: mobilesubstrate
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: X-Nekama integration layer for the X iOS app.
+Maintainer: X-Nekama
+Author: X-Nekama
+Section: Tweaks
