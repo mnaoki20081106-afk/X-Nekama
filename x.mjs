@@ -6,6 +6,7 @@ import {scrapeTweets} from './vendor/xactions/src/scrapers/twitter/http/tweets.j
 import {postTweet} from './vendor/xactions/src/scrapers/twitter/http/actions.js';
 import {uploadImage} from './vendor/xactions/src/scrapers/twitter/http/media.js';
 import {readFile} from 'node:fs/promises';
+function stageError(error,stage){if(error&&typeof error==='object'){error.deliveryStage=stage;return error}const wrapped=new Error(String(error));wrapped.deliveryStage=stage;return wrapped}
 export async function login(username,password,email=''){
  const auth=new TwitterAuth();
  const who=await auth.loginWithCredentials(username,password,email);
@@ -36,11 +37,11 @@ export async function publish(cookies,text,imagePath,altText){
  const mediaIds=[];
  if(imagePath){
   try{const media=await uploadImage(client,await readFile(imagePath),{altText});mediaIds.push(media.mediaId)}
-  catch(error){error.deliveryStage='upload';throw error}
+  catch(error){throw stageError(error,'upload')}
  }
  let result;
  try{result=await postTweet(client,text,{mediaIds})}
- catch(error){error.deliveryStage='submit';throw error}
+ catch(error){throw stageError(error,'submit')}
  const id=result?.rest_id??result?.legacy?.id_str??result?.tweet?.rest_id;
  if(!id){const error=new Error('Xの返答から投稿IDを確認できません。重複投稿を避けるため、Xで投稿有無を確認してから再試行してください。');error.deliveryStage='submit';throw error}
  return String(id);
