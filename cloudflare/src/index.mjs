@@ -12,13 +12,14 @@ const problem=(status,message)=>json({error:message},status);
 const uid=()=>crypto.randomUUID();
 const nowIso=()=>new Date().toISOString();
 const futureIso=ms=>new Date(Date.now()+ms).toISOString();
-const base64url=bytes=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const base64url=bytes=>bytesToBase64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const fromBase64=value=>{
   const normalized=value.replace(/-/g,'+').replace(/_/g,'/');
   const raw=atob(normalized+'='.repeat((4-normalized.length%4)%4));
   return Uint8Array.from(raw,c=>c.charCodeAt(0));
 };
 const randomToken=(bytes=32)=>{const v=new Uint8Array(bytes);crypto.getRandomValues(v);return base64url(v)};
+const bytesToBase64=bytes=>{let out='';const chunk=0x8000;for(let i=0;i<bytes.length;i+=chunk)out+=String.fromCharCode(...bytes.subarray(i,Math.min(bytes.length,i+chunk)));return btoa(out)};
 async function sha256(value){return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256',textEncoder.encode(value))))}
 function cookieValue(request,name){
   const cookie=request.headers.get('cookie')||'';
@@ -32,7 +33,7 @@ function clearSessionCookie(){return `${SESSION_COOKIE}=; HttpOnly; Secure; Same
 function originAllowed(request,env){
   if(['GET','HEAD','OPTIONS'].includes(request.method))return true;
   const origin=request.headers.get('origin');
-  if(!origin)return true;
+  if(!origin)return false;
   try{return new URL(origin).origin===new URL(env.PUBLIC_BASE_URL).origin}catch{return false}
 }
 async function readJson(request,limit=6*1024*1024){
@@ -404,7 +405,7 @@ async function generateImageForDraft(env,user,draft){
   for(const ref of refs.results){
     const object=await env.MEDIA.get(ref.r2_key);if(!object)continue;
     const bytes=new Uint8Array(await object.arrayBuffer());
-    imageInputs.push({type:'image_url',url:`data:${ref.mime};base64,${btoa(String.fromCharCode(...bytes))}`});
+    imageInputs.push({type:'image_url',url:`data:${ref.mime};base64,${bytesToBase64(bytes)}`});
   }
   const prompt=String(draft.image_prompt||'').trim()||`成人の架空AIキャラクター「${account.character_name}」のオリジナル写真。投稿内容: ${draft.text}。撮影スタイル: ${draft.image_style}。自然なスマートフォン写真として生成し、文字・透かし・企業ロゴは入れない。`;
   const path=imageInputs.length?'/v1/images/edits':'/v1/images/generations';
@@ -436,7 +437,7 @@ async function publishDraft(env,draft){
       if(!asset)throw new Error('image missing');
       const object=await env.MEDIA.get(asset.r2_key);if(!object)throw new Error('image missing');
       const bytes=new Uint8Array(await object.arrayBuffer());
-      const upload=await xApi(token,'/2/media/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({media:btoa(String.fromCharCode(...bytes)),media_category:'tweet_image'})});
+      const upload=await xApi(token,'/2/media/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({media:bytesToBase64(bytes),media_category:'tweet_image'})});
       mediaId=upload?.data?.id;if(!mediaId)throw new Error('media upload failed');
     }
     const result=await xApi(token,'/2/tweets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
@@ -575,7 +576,14 @@ export default {
         if(!originAllowed(request,env))return problem(403,'送信元を確認してください');
         return await handleApi(request,env);
       }
-      return env.STATIC.fetch(request);
+      const response=await env.STATIC.fetch(request);
+      const headers=new Headers(response.headers);
+      headers.set('x-content-type-options','nosniff');
+      headers.set('referrer-policy','no-referrer');
+      headers.set('x-frame-options','DENY');
+      headers.set('permissions-policy','camera=(), microphone=(), geolocation=()');
+      headers.set('content-security-policy',"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://x.com");
+      return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
     }catch(error){
       const status=Number(error?.status||0);
       if(status===401)return problem(401,'ログインしてください');
