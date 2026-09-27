@@ -1,4 +1,5 @@
 const SESSION_COOKIE='nk_session';
+const OAUTH_COOKIE='nk_oauth';
 const SESSION_DAYS=30;
 const MAX_IMAGE_BYTES=5*1024*1024;
 const textEncoder=new TextEncoder();
@@ -30,6 +31,8 @@ function sessionCookie(token,maxAge=SESSION_DAYS*86400){
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 function clearSessionCookie(){return `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`}
+function oauthCookie(token,maxAge=600){return `${OAUTH_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/auth/x/; Max-Age=${maxAge}`}
+function clearOAuthCookie(){return `${OAUTH_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/auth/x/; Max-Age=0`}
 function originAllowed(request,env){
   if(['GET','HEAD','OPTIONS'].includes(request.method))return true;
   const origin=request.headers.get('origin');
@@ -183,11 +186,11 @@ async function audit(env,ownerId,kind,objectId=null){
 async function startOAuth(request,env){
   const url=new URL(request.url),mode=url.searchParams.get('mode')==='connect'?'connect':'login';
   let user=null;if(mode==='connect')user=await requireUser(request,env);
-  const state=randomToken(32),verifier=randomToken(48),challenge=await sha256(verifier);
-  const stateHash=await sha256(state);
+  const state=randomToken(32),verifier=randomToken(48),challenge=await sha256(verifier),browserNonce=randomToken(32);
+  const stateHash=await sha256(state),browserNonceHash=await sha256(browserNonce);
   const verifierCipher=await seal(env,verifier,`oauth:${stateHash}`);
-  await env.DB.prepare('INSERT INTO oauth_flows(state_hash,user_id,mode,verifier_cipher,expires_at) VALUES(?,?,?,?,?)')
-    .bind(stateHash,user?.id||null,mode,verifierCipher,futureIso(10*60000)).run();
+  await env.DB.prepare('INSERT INTO oauth_flows(state_hash,user_id,mode,verifier_cipher,browser_nonce_hash,expires_at) VALUES(?,?,?,?,?,?)')
+    .bind(stateHash,user?.id||null,mode,verifierCipher,browserNonceHash,futureIso(10*60000)).run();
   const auth=new URL('https://x.com/i/oauth2/authorize');
   auth.searchParams.set('response_type','code');
   auth.searchParams.set('client_id',env.X_CLIENT_ID);
@@ -196,7 +199,7 @@ async function startOAuth(request,env){
   auth.searchParams.set('state',state);
   auth.searchParams.set('code_challenge',challenge);
   auth.searchParams.set('code_challenge_method','S256');
-  return Response.redirect(auth.toString(),302);
+  return new Response(null,{status:302,headers:{location:auth.toString(),'set-cookie':oauthCookie(browserNonce)}});
 }
 async function finishOAuth(request,env){
   const url=new URL(request.url),state=url.searchParams.get('state')||'',code=url.searchParams.get('code')||'';
@@ -204,6 +207,8 @@ async function finishOAuth(request,env){
   const stateHash=await sha256(state);
   const flow=await env.DB.prepare('SELECT * FROM oauth_flows WHERE state_hash=? AND expires_at>CURRENT_TIMESTAMP').bind(stateHash).first();
   if(!flow)return problem(400,'認証の有効期限が切れました');
+  const browserNonce=cookieValue(request,OAUTH_COOKIE);
+  if(!browserNonce||await sha256(browserNonce)!==flow.browser_nonce_hash)return problem(400,'認証を開始したブラウザと一致しません');
   await env.DB.prepare('DELETE FROM oauth_flows WHERE state_hash=?').bind(stateHash).run();
   const verifier=await open(env,flow.verifier_cipher,`oauth:${stateHash}`);
   const tokens=await exchangeCode(env,code,verifier),who=await xMe(tokens.access_token);
@@ -239,7 +244,9 @@ async function finishOAuth(request,env){
       .bind(accountId,ownerId,String(who.id),who.username,character,character,`架空のAIキャラクター｜${character}`,accessCipher,refreshCipher,expires).run();
   }
   await audit(env,ownerId,flow.mode==='login'?'login':'account_connect',accountId);
-  return new Response(null,{status:302,headers:{location:new URL('/',env.PUBLIC_BASE_URL).toString(),...responseHeaders}});
+  const headers=new Headers({location:new URL('/',env.PUBLIC_BASE_URL).toString(),...responseHeaders});
+  headers.append('set-cookie',clearOAuthCookie());
+  return new Response(null,{status:302,headers});
 }
 async function stateResponse(env,user){
   const [accounts,assets,drafts,jobs]=await Promise.all([
@@ -273,7 +280,7 @@ async function patchAccount(request,env,user,id){
     if(!Number.isInteger(values.posting_frequency)||values.posting_frequency<1||values.posting_frequency>21)return problem(400,'投稿案数は1〜21件で設定してください');
   }
   if('age'in values&&values.age!==''){values.age=Number(values.age);if(!Number.isInteger(values.age)||values.age<18||values.age>120)return problem(400,'年齢は18〜120で設定してください')}
-  const bio=String(values.bio??current.bio||'');
+  const bio=String((values.bio??current.bio)||'');
   if(!/AI/i.test(bio)||!/(架空|バーチャル)/.test(bio))return problem(400,'プロフィールに架空のAIキャラクターである旨を記載してください');
   if(!Object.keys(values).length)return problem(400,'変更項目がありません');
   const keys=Object.keys(values),sql=`UPDATE accounts SET ${keys.map(k=>k+'=?').join(',')},updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`;
