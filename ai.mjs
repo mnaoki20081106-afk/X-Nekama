@@ -124,16 +124,17 @@ const weekSchema={
 
 export async function generateWeek(account,refs,history,start,count=7){
  const reference=refs.map(r=>({username:r.username,summary:r.summary||'未分析'}));
+ const interval=Math.min(365,Math.max(1,Number(account.activity_interval_days)||1));
  const jstTomorrow=new Date(new Date(start).getTime()+9*3600000+86400000);
- const dates=Array.from({length:7},(_,i)=>{const d=new Date(jstTomorrow);d.setUTCDate(d.getUTCDate()+i);return d.toISOString().slice(0,10)});
+ const dates=Array.from({length:count},(_,i)=>{const d=new Date(jstTomorrow);d.setUTCDate(d.getUTCDate()+i*interval);return d.toISOString().slice(0,10)});
  const prompt=`あなたは、プロフィール上でAIキャラクターであることを明示して運用するXアカウントの編集者です。
 日本語の自然な投稿案を作ってください。本人が現実に体験した事実だと誤認させる断定は避け、参考アカウントの投稿をコピーしないでください。
 各投稿は240文字以内。image_style は 'purikura','bereal','selfie','mirror','candid' または null。
-設定: ${JSON.stringify({name:account.character_name,age:account.age,gender:account.gender,occupation:account.occupation,location:account.location,tone:account.tone,first_person:account.first_person,personality:account.personality,hobbies:account.hobbies,bio:account.bio,emoji:account.emoji_style,avoid:account.ng_topics,frequency:count,hours:account.active_hours})}
+設定: ${JSON.stringify({name:account.character_name,age:account.age,gender:account.gender,occupation:account.occupation,location:account.location,tone:account.tone,first_person:account.first_person,personality:account.personality,hobbies:account.hobbies,bio:account.bio,emoji:account.emoji_style,avoid:account.ng_topics,batch_count:count,activity_interval_days:interval,hours:account.active_hours})}
 参考分析: ${JSON.stringify(reference)}
 最近の投稿: ${JSON.stringify(history.map(h=>h.text).slice(0,25))}
-利用可能な日付: ${dates.join(', ')}
-時刻は日本時間 HH:MM。合計${count}件。最近の投稿と内容・言い回しが重複しないようにしてください。`;
+投稿日は必ず次の候補を順番に使ってください: ${dates.join(', ')}
+浮上頻度は${interval}日に1回です。各候補日につき1件、時刻は日本時間 HH:MM。合計${count}件。最近の投稿と内容・言い回しが重複しないようにしてください。`;
  const parsed=await requestJson(prompt,{schema:weekSchema,name:'weekly_posts'});
  if(!Array.isArray(parsed.posts))throw new Error('生成結果に posts 配列がありません');
  const seen=new Set(history.map(h=>h.text));
