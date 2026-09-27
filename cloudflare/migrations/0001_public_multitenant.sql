@@ -61,6 +61,31 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS accounts_owner ON accounts(owner_id);
 
+CREATE TABLE IF NOT EXISTS refs (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(owner_id, username)
+);
+CREATE INDEX IF NOT EXISTS refs_owner ON refs(owner_id);
+
+CREATE TABLE IF NOT EXISTS ref_posts (
+  id TEXT NOT NULL,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  ref_id TEXT NOT NULL REFERENCES refs(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  posted_at TEXT,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  media_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY(owner_id, ref_id, id)
+);
+CREATE INDEX IF NOT EXISTS ref_posts_ref ON ref_posts(owner_id,ref_id,posted_at);
+
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
