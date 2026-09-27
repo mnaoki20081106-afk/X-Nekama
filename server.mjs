@@ -78,7 +78,12 @@ run("UPDATE jobs SET status='failed',detail='サーバー再起動により処�
 async function generateBatch(a,count){
  const refs=all("SELECT * FROM refs WHERE summary<>'' ORDER BY fetched_at DESC LIMIT 8");
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
- const posts=await ai.generateWeek(a,refs,history,new Date().toISOString(),count);
+ const interval=Math.min(365,Math.max(1,Number(a.activity_interval_days)||1));
+ const futureDates=all("SELECT scheduled_at FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL",a.id)
+  .map(d=>new Date(d.scheduled_at).getTime()).filter(Number.isFinite).filter(t=>t>Date.now());
+ const latest=futureDates.length?Math.max(...futureDates):null;
+ const seed=latest?new Date(latest+(interval-1)*86400000).toISOString():new Date().toISOString();
+ const posts=await ai.generateWeek(a,refs,history,seed,count);
  db.exec('BEGIN');const ids=[];
  try{for(const p of posts){const id=uid(),prompt=ai.imagePrompt(a,p,all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));run('INSERT INTO drafts(id,account_id,text,image_style,scheduled_at,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,a.id,p.text,p.image_style,p.scheduled_at,prompt,fingerprintPost(p.text));ids.push(id)}db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}
  if(a.auto_generate_images){
@@ -139,11 +144,13 @@ async function generateBatch(a,count){
  }
 }
 function replenish(){if(!process.env.XAI_API_KEY)return;for(const a of all("SELECT * FROM accounts WHERE enabled=1 AND (api_token_cipher IS NOT NULL OR session_cipher IS NOT NULL)")){
- const recent=row("SELECT id FROM jobs WHERE account_id=? AND kind='auto-weekly-plan' AND created_at>=datetime('now','-6 days') ORDER BY created_at DESC LIMIT 1",a.id);
+ const recent=row("SELECT id FROM jobs WHERE account_id=? AND kind='auto-schedule-fill' AND created_at>=datetime('now','-1 hour') ORDER BY created_at DESC LIMIT 1",a.id);
  if(recent)continue;
- const pending=row("SELECT count(*) n FROM drafts WHERE account_id=? AND created_at>=datetime('now','-6 days')",a.id)?.n||0;
- if(pending>=Number(a.posting_frequency||7))continue;
- addJob(a.id,'auto-weekly-plan',()=>generateBatch(a,Math.min(21,Math.max(1,Number(a.posting_frequency)||7))));
+ const target=Math.min(21,Math.max(1,Number(a.posting_frequency)||7));
+ const pending=all("SELECT scheduled_at FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL",a.id)
+  .filter(d=>Number.isFinite(new Date(d.scheduled_at).getTime())&&new Date(d.scheduled_at).getTime()>Date.now()).length;
+ if(pending>=target)continue;
+ addJob(a.id,'auto-schedule-fill',()=>generateBatch(a,target-pending));
 }}
 // Interrupted in-flight requests stay 'publishing': an ambiguous response must never auto-post twice.
 await mkdir(join(dataDir,'assets'),{recursive:true,mode:0o700});
