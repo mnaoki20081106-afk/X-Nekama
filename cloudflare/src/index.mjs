@@ -183,6 +183,20 @@ async function ownedAsset(env,ownerId,id){
 async function audit(env,ownerId,kind,objectId=null){
   await env.DB.prepare('INSERT INTO audit_events(id,owner_id,kind,object_id) VALUES(?,?,?,?)').bind(uid(),ownerId||null,kind,objectId).run();
 }
+
+async function consumeQuota(env,ownerId,kind){
+  const day=new Date().toISOString().slice(0,10);
+  const column=kind==='image'?'image_requests':'text_requests';
+  const fallback=kind==='image'?10:20;
+  const configured=Number(kind==='image'?env.IMAGE_GENERATION_DAILY_LIMIT:env.TEXT_GENERATION_DAILY_LIMIT);
+  const limit=Number.isInteger(configured)&&configured>0?configured:fallback;
+  await env.DB.prepare('INSERT OR IGNORE INTO usage_daily(owner_id,day) VALUES(?,?)').bind(ownerId,day).run();
+  const result=await env.DB.prepare(`UPDATE usage_daily SET ${column}=${column}+1 WHERE owner_id=? AND day=? AND ${column}<? RETURNING ${column} n`)
+    .bind(ownerId,day,limit).first();
+  if(!result)throw Object.assign(new Error('quota_exceeded'),{status:429});
+  return {used:Number(result.n),limit};
+}
+
 async function startOAuth(request,env){
   const url=new URL(request.url),mode=url.searchParams.get('mode')==='connect'?'connect':'login';
   let user=null;if(mode==='connect')user=await requireUser(request,env);
@@ -374,6 +388,7 @@ const weekSchema={type:'object',properties:{posts:{type:'array',items:{type:'obj
 },required:['text','date','time','image_style'],additionalProperties:false}}},required:['posts'],additionalProperties:false};
 async function generateBatch(env,user,account,count){
   if(!env.XAI_API_KEY)throw new Error('xAI unavailable');
+  await consumeQuota(env,user.id,'text');
   count=Math.min(21,Math.max(1,Number(count)||7));
   const interval=Math.min(365,Math.max(1,Number(account.activity_interval_days)||1));
   const future=await env.DB.prepare(`SELECT scheduled_at FROM drafts WHERE owner_id=? AND account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL`)
@@ -405,6 +420,7 @@ async function generateBatch(env,user,account,count){
 }
 async function generateImageForDraft(env,user,draft){
   const account=await ownedAccount(env,user.id,draft.account_id);if(!draft.image_style)throw Object.assign(new Error('no_image_style'),{status:400});
+  await consumeQuota(env,user.id,'image');
   const refs=await env.DB.prepare(`SELECT * FROM assets WHERE owner_id=? AND account_id=? AND (
     kind='base' OR category='phone_case' OR category=?
   ) ORDER BY created_at DESC LIMIT 5`).bind(user.id,account.id,draft.image_style).all();
@@ -531,6 +547,15 @@ async function handleApi(request,env){
   if(path==='/api/logout'&&method==='POST'){
     await deleteSession(request,env);return json({ok:true},200,{'set-cookie':clearSessionCookie()});
   }
+  if(path==='/api/me'&&method==='DELETE'){
+    const user=await requireUser(request,env);
+    const assets=await env.DB.prepare('SELECT r2_key FROM assets WHERE owner_id=?').bind(user.id).all();
+    for(const asset of assets.results)await env.MEDIA.delete(asset.r2_key);
+    await env.DB.prepare('DELETE FROM oauth_flows WHERE user_id=?').bind(user.id).run();
+    await env.DB.prepare('DELETE FROM audit_events WHERE owner_id=?').bind(user.id).run();
+    await env.DB.prepare('DELETE FROM users WHERE id=?').bind(user.id).run();
+    return json({ok:true},200,{'set-cookie':clearSessionCookie()});
+  }
   const user=await requireUser(request,env);
   if(path==='/api/state'&&method==='GET')return stateResponse(env,user);
   let m=path.match(/^\/api\/accounts\/([^/]+)$/);
@@ -594,6 +619,7 @@ export default {
     }catch(error){
       const status=Number(error?.status||0);
       if(status===401)return problem(401,'ログインしてください');
+      if(status===429)return problem(429,'本日の生成上限に達しました');
       if(status===404)return problem(404,'見つかりません');
       if(status===413)return problem(413,'データが大きすぎます');
       if(status===400)return problem(400,'入力内容を確認してください');
