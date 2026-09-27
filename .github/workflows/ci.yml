@@ -13,3 +13,4 @@ jobs:
       - run: npm test
       - run: node --check server.mjs
       - run: node --check public/app.js
+      - run: node --check cloudflare/src/index.mjs
