@@ -107,7 +107,7 @@ async function generateBatch(a,count){
  const due=all("SELECT * FROM drafts WHERE status='scheduled' AND scheduled_at<=? AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,scheduled_at),scheduled_at LIMIT 10",now,now);
  for(const d of due){
   const a=requireAccount(d.account_id);
-  if(!a.enabled||(!a.api_token_cipher&&!a.session_cipher))continue;
+  if(!a.enabled||!a.session_cipher)continue;
   if(!acquirePublishLock(a.id,d.id))continue;
   let claimed=false;
   try{
@@ -117,16 +117,9 @@ async function generateBatch(a,count){
    const asset=d.image_id?row('SELECT * FROM assets WHERE id=?',d.image_id):null;
    if(d.image_style&&!asset)throw Error('投稿画像が未設定です。画像をセットしてから再予約してください');
    const imagePath=asset&&join(dataDir,'assets',asset.filename);
-   let xId;
-   if(a.api_token_cipher){
-    const token=decrypt(a.api_token_cipher);
-    await x.checkApiBio(token,a.username);
-    xId=await x.publishApi(token,d.text,imagePath,`架空AIキャラクター ${a.character_name} の生成画像`);
-   }else{
-    const cookies=decrypt(a.session_cipher);
-    await x.checkBio(cookies,a.username);
-    xId=await x.publish(cookies,d.text,imagePath,`架空AIキャラクター ${a.character_name} の生成画像`);
-   }
+   const cookies=decrypt(a.session_cipher);
+   await x.checkBio(cookies,a.username);
+   const xId=await x.publish(cookies,d.text,imagePath,`架空AIキャラクター ${a.character_name} の生成画像`);
    run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",xId,d.id);
   }catch(e){
    console.error('publish:',e);
@@ -143,7 +136,7 @@ async function generateBatch(a,count){
   }finally{releasePublishLock(a.id,d.id)}
  }
 }
-function replenish(){if(!process.env.XAI_API_KEY)return;for(const a of all("SELECT * FROM accounts WHERE enabled=1 AND (api_token_cipher IS NOT NULL OR session_cipher IS NOT NULL)")){
+function replenish(){if(!process.env.XAI_API_KEY)return;for(const a of all("SELECT * FROM accounts WHERE enabled=1 AND session_cipher IS NOT NULL")){
  const recent=row("SELECT id FROM jobs WHERE account_id=? AND kind='auto-schedule-fill' AND created_at>=datetime('now','-1 hour') ORDER BY created_at DESC LIMIT 1",a.id);
  if(recent)continue;
  const target=Math.min(21,Math.max(1,Number(a.posting_frequency)||7));
@@ -171,24 +164,10 @@ const server=http.createServer(async(req,res)=>{try{
  if(method==='GET'&&path.startsWith('/api/assets/')){const asset=row('SELECT * FROM assets WHERE id=?',path.slice(12));if(!asset)fail(404,'画像なし');const download=new URL(req.url,'http://localhost').searchParams.has('download');res.writeHead(200,{'content-type':asset.mime,'cache-control':'private, max-age=300','x-content-type-options':'nosniff',...(download?{'content-disposition':`attachment; filename="${asset.filename}"`}:{})});return res.end(await readFile(join(dataDir,'assets',asset.filename)))}
  if(method==='POST'&&path==='/api/accounts'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'XのIDを確認してください');const id=uid();run('INSERT INTO accounts(id,username,display_name,character_name,bio) VALUES(?,?,?,?,?)',id,username,String(b.display_name||username).slice(0,80),String(b.character_name||b.display_name||username).slice(0,80),`架空のAIキャラクター｜${String(b.character_name||username).slice(0,60)}`);return json(res,201,{id})}
  let m=path.match(/^\/api\/accounts\/([^/]+)$/);
- if(m&&method==='PATCH'){const current=requireAccount(m[1]);const b=await body(req);const keys=['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images'];const values=Object.fromEntries(keys.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(Object.hasOwn(values,'enabled'))values.enabled=values.enabled===true?1:0;if(Object.hasOwn(values,'auto_approve'))values.auto_approve=values.auto_approve===true?1:0;if(Object.hasOwn(values,'auto_generate_images'))values.auto_generate_images=values.auto_generate_images===true?1:0;if(!/AI/i.test(String(values.bio??current.bio))||!/(架空|バーチャル)/.test(String(values.bio??current.bio)))fail(400,'プロフィールに架空のAIキャラクターである旨を記載してください');if(String(values.bio??current.bio).length>160)fail(400,'プロフィールは160文字以内にしてください');if(values.age!=null&&values.age<18)fail(400,'キャラクターの年齢は18歳以上にしてください');if(values.activity_interval_days!=null){values.activity_interval_days=Number(values.activity_interval_days);if(!Number.isInteger(values.activity_interval_days)||values.activity_interval_days<1||values.activity_interval_days>365)fail(400,'浮上頻度は1〜365日の整数で設定してください');}if(values.enabled&&!current.api_token_cipher&&!current.session_cipher)fail(400,'先にX接続をしてください');if(values.auto_approve&&!(values.enabled??current.enabled))fail(400,'自動承認には運用ONが必要です');if(values.auto_generate_images&&!process.env.XAI_API_KEY)fail(400,'自動画像生成にはXAI_API_KEYが必要です');if(!Object.keys(values).length)fail(400,'変更項目がありません');if(values.bio!=null&&values.bio!==current.bio&&current.session_cipher){try{await x.ensureBio(decrypt(current.session_cipher),current.username,String(values.bio))}catch(e){fail(502,'Xプロフィールを更新できませんでした: '+e.message)}}run(`UPDATE accounts SET ${Object.keys(values).map(k=>k+'=?').join(',')},updated_at=datetime('now') WHERE id=?`,...Object.values(values).map(v=>v??''),m[1]);return json(res,200,{ok:true})}
+ if(m&&method==='PATCH'){const current=requireAccount(m[1]);const b=await body(req);const keys=['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images'];const values=Object.fromEntries(keys.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(Object.hasOwn(values,'enabled'))values.enabled=values.enabled===true?1:0;if(Object.hasOwn(values,'auto_approve'))values.auto_approve=values.auto_approve===true?1:0;if(Object.hasOwn(values,'auto_generate_images'))values.auto_generate_images=values.auto_generate_images===true?1:0;if(!/AI/i.test(String(values.bio??current.bio))||!/(架空|バーチャル)/.test(String(values.bio??current.bio)))fail(400,'プロフィールに架空のAIキャラクターである旨を記載してください');if(String(values.bio??current.bio).length>160)fail(400,'プロフィールは160文字以内にしてください');if(values.age!=null&&values.age<18)fail(400,'キャラクターの年齢は18歳以上にしてください');if(values.activity_interval_days!=null){values.activity_interval_days=Number(values.activity_interval_days);if(!Number.isInteger(values.activity_interval_days)||values.activity_interval_days<1||values.activity_interval_days>365)fail(400,'浮上頻度は1〜365日の整数で設定してください');}if(values.enabled&&!current.session_cipher)fail(400,'先にX接続をしてください');if(values.auto_approve&&!(values.enabled??current.enabled))fail(400,'自動承認には運用ONが必要です');if(values.auto_generate_images&&!process.env.XAI_API_KEY)fail(400,'自動画像生成にはXAI_API_KEYが必要です');if(!Object.keys(values).length)fail(400,'変更項目がありません');if(values.bio!=null&&values.bio!==current.bio&&current.session_cipher){try{await x.ensureBio(decrypt(current.session_cipher),current.username,String(values.bio))}catch(e){fail(502,'Xプロフィールを更新できませんでした: '+e.message)}}run(`UPDATE accounts SET ${Object.keys(values).map(k=>k+'=?').join(',')},updated_at=datetime('now') WHERE id=?`,...Object.values(values).map(v=>v??''),m[1]);return json(res,200,{ok:true})}
  if(m&&method==='DELETE'){requireAccount(m[1]);db.exec('BEGIN');try{run('DELETE FROM drafts WHERE account_id=?',m[1]);run('DELETE FROM accounts WHERE id=?',m[1]);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return json(res,200,{ok:true})}
  m=path.match(/^\/api\/accounts\/([^/]+)\/connect$/);
- if(m&&method==='POST'){const a=requireAccount(m[1]),b=await body(req,16384);
-  if(b.api_access_token){
-   try{
-    const token=String(b.api_access_token).trim();
-    const who=await x.checkApiBio(token,a.username);
-    run("UPDATE accounts SET api_token_cipher=?,session_status='api_connected',updated_at=datetime('now') WHERE id=?",encrypt(token),a.id);
-    return json(res,200,{username:who.username,transport:'x-api-v2'});
-   }catch(e){if(e.status)throw e;fail(502,'X API接続に失敗しました: '+String(e.message||e).slice(0,220))}
-  }
-  let result;try{if(b.cookies){result={cookies:String(b.cookies),who:await x.verify(String(b.cookies))}}else if(b.password){result=await x.login(a.username,String(b.password),String(b.email||''))}else fail(400,'OAuth2 access token、Cookie、またはログイン情報を入力してください')}catch(e){if(e.status)throw e;fail(502,'Xログインに失敗しました: '+String(e.message||e).slice(0,220))}
-  if(result.who?.username?.toLowerCase()!==a.username.toLowerCase())fail(400,`接続先が @${a.username} ではありません`);
-  try{await x.ensureBio(result.cookies,a.username,a.bio)}catch(e){fail(502,'XプロフィールのAI表記を設定できませんでした: '+e.message)}
-  run("UPDATE accounts SET session_cipher=?,session_status=CASE WHEN api_token_cipher IS NOT NULL THEN 'api_connected' ELSE 'connected' END,updated_at=datetime('now') WHERE id=?",encrypt(result.cookies),a.id);
-  return json(res,200,{username:a.username,transport:a.api_token_cipher?'x-api-v2':'legacy-session'})
- }
+ if(m&&method==='POST'){const a=requireAccount(m[1]),b=await body(req,16384);let result;try{if(b.cookies){result={cookies:String(b.cookies),who:await x.verify(String(b.cookies))}}else if(b.password){result=await x.login(a.username,String(b.password),String(b.email||''))}else fail(400,'Xパスワードまたはログイン済みCookieを入力してください')}catch(e){if(e.status)throw e;fail(502,'Xログインに失敗しました: '+String(e.message||e).slice(0,220))}if(result.who?.username?.toLowerCase()!==a.username.toLowerCase())fail(400,`接続先が @${a.username} ではありません`);try{await x.ensureBio(result.cookies,a.username,a.bio)}catch(e){fail(502,'XプロフィールのAI表記を設定できませんでした: '+e.message)}run("UPDATE accounts SET session_cipher=?,api_token_cipher=NULL,session_status='connected',updated_at=datetime('now') WHERE id=?",encrypt(result.cookies),a.id);return json(res,200,{username:a.username,transport:'xactions-session'})}
  m=path.match(/^\/api\/accounts\/([^/]+)\/disconnect$/);
  if(m&&method==='POST'){requireAccount(m[1]);run("UPDATE accounts SET session_cipher=NULL,api_token_cipher=NULL,enabled=0,session_status='unconnected' WHERE id=?",m[1]);return json(res,200,{ok:true})}
  if(method==='POST'&&path==='/api/refs'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'IDを確認してください');const id=uid();run('INSERT INTO refs(id,username) VALUES(?,?)',id,username);return json(res,201,{id})}
