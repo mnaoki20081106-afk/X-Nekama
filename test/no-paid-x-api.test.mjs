@@ -52,3 +52,21 @@ test('Node runtime uses XActions session posting only',async()=>{
   assert.match(source,/await x\.publish\(cookies,d\.text,imagePath/);
   assert.doesNotMatch(source,/publishApi|checkApiBio|api_token_cipher/);
 });
+
+
+test('runtime never depends on shared xAI API',async()=>{
+  const forbidden=[
+    'XAI_API_KEY',
+    'XAI_TEXT_MODEL',
+    'XAI_IMAGE_MODEL',
+    'api.x.ai',
+    'TEXT_GENERATION_DAILY_LIMIT',
+    'IMAGE_GENERATION_DAILY_LIMIT'
+  ];
+  for(const file of runtimeFiles){
+    const source=await readFile(file,'utf8');
+    for(const token of forbidden){
+      assert.equal(source.includes(token),false,`${file} must not contain shared paid AI dependency: ${token}`);
+    }
+  }
+});
