@@ -89,7 +89,7 @@ Wranglerは対応環境ではOSキーチェーンを使う安全なログイン�
   https://x-nekama-xxxx.example.workers.dev
 ```
 
-このURLを改造Xの **✦ Nekama → Core URLを設定** に入力します。以後は **✦ Nekama → X-Nekama Coreを開く** から自分のCloudflare環境へ入れます。
+セットアップ成功時は、このURLを自動でクリップボードへコピーします。改造Xの **✦ Nekama → Core URLを設定** に貼り付けます。以後は **✦ Nekama → X-Nekama Coreを開く** から自分のCloudflare環境へ入れます。
 
 ---
 
@@ -250,6 +250,24 @@ iOSのバックグラウンド制約により、アプリを閉じた状態で�
 Cloudflare self-hostを設定すると、端末が閉じていても予約投稿を実行できます。
 
 ---
+
+## 現在のCloudflare Free枠の目安
+
+2026年9月時点の公式Free枠:
+
+- Workers: 100,000 requests / day
+- D1: 5,000,000 rows read / day
+- D1: 100,000 rows written / day
+- D1 storage: 5 GB
+- Queues: 10,000 operations / day
+- R2 Standard storage: 10 GB-month / month
+- R2 Class A: 1,000,000 operations / month
+- R2 Class B: 10,000,000 operations / month
+- R2 egress: free
+
+この用途の個人運用では通常かなり小さい利用量になりますが、**無料を永久保証するものではありません**。Cloudflareの料金・無料枠は今後変更される可能性があります。
+
+Workers Free / D1 Freeは上限到達時に処理が失敗・停止する方式です。R2はアカウントの課金設定と超過利用量によっては料金が発生し得るため、Cloudflare DashboardのUsageも確認してください。
 
 # 費用
 
