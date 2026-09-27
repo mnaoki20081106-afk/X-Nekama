@@ -18,7 +18,6 @@ X-Nekamaを一般公開する前の必須チェックです。
 
 次の値はIPA、JavaScript、D1、R2、GitHub repositoryへ入れません。
 
-- TOKEN_ENCRYPTION_KEY
 - Cloudflare API token
 - X Web session cookie
 - Xパスワード
@@ -47,7 +46,7 @@ X-Nekamaを一般公開する前の必須チェックです。
 - X Developer / OAuth 2.0は使用しない
 - XActionsでユーザー自身のX Webセッションを検証
 - パスワードは保存しない
-- CookieだけAES-256-GCM暗号化
+- CookieだけAES-256-GCM暗号化。master keyはprivate R2内部で自動生成
 - 2FA/captcha等はログイン済みCookie方式
 - CookieをAPI response/logへ出さない
 
