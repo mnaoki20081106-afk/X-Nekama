@@ -1,0 +1,15 @@
+{
+  "name":"x-nekama-cloudflare",
+  "private":true,
+  "type":"module",
+  "scripts":{
+    "dev":"wrangler dev --config wrangler.toml",
+    "check":"node --check src/index.mjs",
+    "db:migrate:local":"wrangler d1 migrations apply x-nekama-public --local --config wrangler.toml",
+    "db:migrate:remote":"wrangler d1 migrations apply x-nekama-public --remote --config wrangler.toml",
+    "deploy":"wrangler deploy --config wrangler.toml"
+  },
+  "devDependencies":{
+    "wrangler":"^4.36.0"
+  }
+}
