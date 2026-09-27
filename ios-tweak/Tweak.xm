@@ -148,8 +148,10 @@ static void NKOpenURL(NSURL *url) {
 
 static void NKOpenGrokWithPrompt(UIViewController *controller) {
     NSString *prompt = NKPostPrompt(controller);
-    NSString *encoded = [prompt stringByAddingPercentEncodingWithAllowedCharacters:
-                         NSCharacterSet.URLQueryAllowedCharacterSet];
+    NSCharacterSet *unreserved =
+        [NSCharacterSet characterSetWithCharactersInString:
+         @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"];
+    NSString *encoded = [prompt stringByAddingPercentEncodingWithAllowedCharacters:unreserved];
 
     // X 12.29 includes this route in XAppLibraries.framework.
     NSString *urlString = [NSString stringWithFormat:@"https://www.x.com/i/grok?text=%@", encoded ?: @""];
