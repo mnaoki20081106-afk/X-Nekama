@@ -34,9 +34,14 @@ export async function collect(cookies,username,limit=500){
 export async function publish(cookies,text,imagePath,altText){
  const client=new TwitterHttpClient({cookies,rateLimitStrategy:'error'});
  const mediaIds=[];
- if(imagePath){const media=await uploadImage(client,await readFile(imagePath),{altText});mediaIds.push(media.mediaId)}
- const result=await postTweet(client,text,{mediaIds});
+ if(imagePath){
+  try{const media=await uploadImage(client,await readFile(imagePath),{altText});mediaIds.push(media.mediaId)}
+  catch(error){error.deliveryStage='upload';throw error}
+ }
+ let result;
+ try{result=await postTweet(client,text,{mediaIds})}
+ catch(error){error.deliveryStage='submit';throw error}
  const id=result?.rest_id??result?.legacy?.id_str??result?.tweet?.rest_id;
- if(!id)throw new Error('Xの返答から投稿IDを確認できません。重複投稿を避けるため、Xで投稿有無を確認してから再試行してください。');
+ if(!id){const error=new Error('Xの返答から投稿IDを確認できません。重複投稿を避けるため、Xで投稿有無を確認してから再試行してください。');error.deliveryStage='submit';throw error}
  return String(id);
 }
