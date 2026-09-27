@@ -144,11 +144,3 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS audit_owner ON audit_events(owner_id,created_at);
 
 
-CREATE TABLE IF NOT EXISTS usage_daily (
-  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  day TEXT NOT NULL,
-  text_requests INTEGER NOT NULL DEFAULT 0,
-  image_requests INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY(owner_id, day)
-);
-CREATE INDEX IF NOT EXISTS usage_daily_day ON usage_daily(day);
