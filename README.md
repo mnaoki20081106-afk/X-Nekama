@@ -68,7 +68,7 @@ X上で使える公開投稿の範囲とX側の取得制限に左右されるた
 
 | 変数 | 用途 |
 |---|---|
-| `XAI_API_KEY` | Google AI Studioで発行するキー。サーバーだけに設定 |
+| `XAI_API_KEY` | xAI Consoleで発行するキー。サーバーだけに設定 |
 | `XAI_TEXT_MODEL` | 投稿・文体分析モデル。初期値 `grok-4.7` |
 | `XAI_IMAGE_MODEL` | 画像生成モデル。初期値 `grok-imagine-image-2.0` |
 | `XAI_IMAGE_RESOLUTION` | 生成解像度。初期値 `1k` |
