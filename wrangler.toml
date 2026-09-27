@@ -1,0 +1,35 @@
+name = "x-nekama"
+main = "cloudflare/src/index.mjs"
+compatibility_date = "2026-09-27"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "public"
+binding = "STATIC"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "x-nekama-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "cloudflare/migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "x-nekama-media"
+
+[[queues.producers]]
+binding = "TASKS"
+queue = "x-nekama-tasks"
+
+[[queues.consumers]]
+queue = "x-nekama-tasks"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+retry_delay = 60
+dead_letter_queue = "x-nekama-dlq"
+max_concurrency = 4
+
+[triggers]
+crons = ["* * * * *"]
