@@ -27,8 +27,8 @@ function requireAccount(id){const a=row('SELECT * FROM accounts WHERE id=?',id);
 const MAX_DELIVERY_ATTEMPTS=3;
 function ensureNoQueuedDuplicate(draft){
  const fp=draft.content_fingerprint||fingerprintPost(draft.text);
- const duplicate=all("SELECT id,text,status FROM drafts WHERE account_id=? AND id<>? AND status IN ('scheduled','publishing')",draft.account_id,draft.id).find(other=>fingerprintPost(other.text)===fp);
- if(duplicate)fail(409,'同じ本文の投稿がこのアカウントですでに予約または送信処理中です');
+ const duplicate=all("SELECT id,text,status FROM drafts WHERE account_id=? AND id<>? AND (status IN ('scheduled','publishing') OR (status='posted' AND posted_at>=datetime('now','-24 hours')))",draft.account_id,draft.id).find(other=>fingerprintPost(other.text)===fp);
+ if(duplicate)fail(409,'同じ本文の投稿がこのアカウントですでに予約・送信中、または直近24時間に投稿済みです');
  return fp;
 }
 function acquirePublishLock(accountId,draftId){
