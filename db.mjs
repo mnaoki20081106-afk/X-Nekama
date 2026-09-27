@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS accounts (
  personality TEXT DEFAULT '', hobbies TEXT DEFAULT '', bio TEXT DEFAULT '',
  emoji_style TEXT DEFAULT '', ng_topics TEXT DEFAULT '', posting_frequency INTEGER DEFAULT 7,
  activity_interval_days INTEGER DEFAULT 1, active_hours TEXT DEFAULT '10:00-22:00', gender TEXT DEFAULT '', occupation TEXT DEFAULT '', first_person TEXT DEFAULT '',
- base_image_id TEXT, session_cipher TEXT, api_token_cipher TEXT, session_status TEXT DEFAULT 'unconnected', enabled INTEGER DEFAULT 0,
+ base_image_id TEXT, session_cipher TEXT, session_status TEXT DEFAULT 'unconnected', enabled INTEGER DEFAULT 0,
  auto_approve INTEGER DEFAULT 0, auto_generate_images INTEGER DEFAULT 0,
  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -49,7 +49,6 @@ CREATE INDEX IF NOT EXISTS drafts_due ON drafts(status,scheduled_at);
 CREATE INDEX IF NOT EXISTS ref_posts_ref ON ref_posts(ref_id);
 `);
 const accountColumns=()=>db.prepare('PRAGMA table_info(accounts)').all();
-if (!accountColumns().some(c=>c.name==='api_token_cipher')) db.exec('ALTER TABLE accounts ADD COLUMN api_token_cipher TEXT');
 if (!accountColumns().some(c=>c.name==='auto_approve')) db.exec('ALTER TABLE accounts ADD COLUMN auto_approve INTEGER DEFAULT 0');
 if (!accountColumns().some(c=>c.name==='auto_generate_images')) db.exec('ALTER TABLE accounts ADD COLUMN auto_generate_images INTEGER DEFAULT 0');
 if (!accountColumns().some(c=>c.name==='gender')) db.exec("ALTER TABLE accounts ADD COLUMN gender TEXT DEFAULT ''");
@@ -68,4 +67,4 @@ export const uid=()=>crypto.randomUUID();
 export const row=(sql,...args)=>db.prepare(sql).get(...args);
 export const all=(sql,...args)=>db.prepare(sql).all(...args);
 export const run=(sql,...args)=>db.prepare(sql).run(...args);
-export const publicAccount=(a)=>a&&Object.fromEntries(Object.entries(a).filter(([k])=>!['session_cipher','api_token_cipher'].includes(k)));
+export const publicAccount=(a)=>a&&Object.fromEntries(Object.entries(a).filter(([k])=>k!=='session_cipher'));
