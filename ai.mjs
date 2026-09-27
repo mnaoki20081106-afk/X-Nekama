@@ -144,7 +144,7 @@ export async function generateImage(prompt,references=[]){
   response_format:'b64_json',
   resolution:process.env.XAI_IMAGE_RESOLUTION||'1k',
   quality:process.env.XAI_IMAGE_QUALITY||'medium',
-  ...(refs.length?{images:refs}:{})
+  ...(refs.length===1?{image:refs[0]}:refs.length>1?{images:refs}:{})
  };
  const result=await xai(endpoint,payload,180000);
  const item=result.data?.[0];
