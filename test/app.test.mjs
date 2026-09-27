@@ -5,6 +5,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {once} from 'node:events';
+import {classifyDeliveryError,fingerprintPost,retryDelayMs} from '../delivery.mjs';
 
 test('login, storage, disclosure, draft and scheduling guard',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'xnekama-')),port=32000+Math.floor(Math.random()*1000);
@@ -39,4 +40,23 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
   r=await send('/api/state');assert.ok(r.json.drafts[0].image_id);
   r=await send('/api/drafts/images/bulk','POST',{items:[{draft_id:draft,data:png},{draft_id:draft,data:png}]});assert.equal(r.res.status,400);
  }finally{child.kill();await once(child,'exit').catch(()=>{});await rm(dir,{recursive:true,force:true})}
+});
+
+
+test('delivery policy separates safe retries from ambiguous submits',()=>{
+ const rate=classifyDeliveryError(Object.assign(new Error('Too Many Requests'),{status:429,deliveryStage:'submit'}));
+ assert.equal(rate.kind,'rate_limit');assert.equal(rate.retryable,true);assert.equal(rate.ambiguous,false);
+ const upload=classifyDeliveryError(Object.assign(new Error('ECONNRESET'),{deliveryStage:'upload'}));
+ assert.equal(upload.kind,'transient');assert.equal(upload.retryable,true);
+ const submit=classifyDeliveryError(Object.assign(new Error('ECONNRESET'),{deliveryStage:'submit'}));
+ assert.equal(submit.kind,'ambiguous');assert.equal(submit.retryable,false);assert.equal(submit.ambiguous,true);
+ const rejected=classifyDeliveryError(Object.assign(new Error('Bad Request'),{status:400,deliveryStage:'submit'}));
+ assert.equal(rejected.kind,'rejected');assert.equal(rejected.retryable,false);
+ assert.equal(retryDelayMs('rate_limit',1),60000);
+ assert.equal(retryDelayMs('transient',2),120000);
+});
+
+test('post fingerprints normalize harmless whitespace differences',()=>{
+ assert.equal(fingerprintPost('  hello   world  '),fingerprintPost('hello world'));
+ assert.notEqual(fingerprintPost('hello world'),fingerprintPost('hello world!'));
 });
