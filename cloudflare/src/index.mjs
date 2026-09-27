@@ -146,6 +146,7 @@ function publicAccount(a){
   if(!a)return null;
   const copy={...a};
   delete copy.access_token_cipher;delete copy.refresh_token_cipher;delete copy.owner_id;
+  copy.session_status='api_connected';
   return copy;
 }
 function imageInfo(dataUrl){
@@ -249,10 +250,12 @@ async function stateResponse(env,user){
   return json({
     user:{username:user.login_username},
     accounts:accounts.results.map(publicAccount),
+    refs:[],
     assets:assets.results,
     drafts:drafts.results,
     jobs:jobs.results,
-    configured:!!env.XAI_API_KEY
+    configured:!!env.XAI_API_KEY,
+    auth_mode:'x_oauth'
   });
 }
 const accountFields=new Set(['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images']);
@@ -514,8 +517,8 @@ async function queueMessage(env,message){
 }
 async function handleApi(request,env){
   const url=new URL(request.url),path=url.pathname,method=request.method;
-  if(path==='/api/me'&&method==='GET'){
-    const user=await sessionUser(request,env);return json({authenticated:!!user,user:user?{username:user.login_username}:null});
+  if((path==='/api/me'||path==='/api/auth')&&method==='GET'){
+    const user=await sessionUser(request,env);return json({authenticated:!!user,mode:'x_oauth',user:user?{username:user.login_username}:null});
   }
   if(path==='/api/logout'&&method==='POST'){
     await deleteSession(request,env);return json({ok:true},200,{'set-cookie':clearSessionCookie()});
