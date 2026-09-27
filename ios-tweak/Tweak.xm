@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <SafariServices/SafariServices.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
@@ -13,6 +14,7 @@ static NSMutableSet<NSString *> *NXHookedGrokAttachmentClasses;
 static NSString *NXLastGrokAttachmentEvent;
 static NSString * const NXGrokAttachmentNotification =
     @"com.xnekama.grokImagineAttachmentDidAdd";
+static NSString * const NXCoreURLDefaultsKey = @"x-nekama.core-url";
 
 static NSString *NXClassName(id object) {
     return object ? NSStringFromClass(object_getClass(object)) : @"";
@@ -227,6 +229,75 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
 
 @implementation NXNekamaHelper
 
+- (NSURL *)validatedCoreURLFromString:(NSString *)value {
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length) return nil;
+    NSURLComponents *components = [NSURLComponents componentsWithString:trimmed];
+    NSString *scheme = components.scheme.lowercaseString;
+    if (!components.host.length || !([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"])) {
+        return nil;
+    }
+    return components.URL;
+}
+
+- (void)configureCoreURL {
+    UIViewController *presenter = NXPresenter(self.composer);
+    if (!presenter) return;
+
+    NSString *current = [NSUserDefaults.standardUserDefaults stringForKey:NXCoreURLDefaultsKey] ?: @"";
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"X-Nekama Core"
+                                            message:@"公開中のX-Nekama管理画面URLを設定してください。"
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"https://your-x-nekama.example";
+        field.text = current;
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"キャンセル"
+                                             style:UIAlertActionStyleCancel
+                                           handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        NSString *value = alert.textFields.firstObject.text ?: @"";
+        NSURL *url = [self validatedCoreURLFromString:value];
+        if (!url) {
+            UIAlertController *error =
+                [UIAlertController alertControllerWithTitle:@"URLを確認してください"
+                                                    message:@"http:// または https:// から始まるURLを入力してください。"
+                                             preferredStyle:UIAlertControllerStyleAlert];
+            [error addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:nil]];
+            [NXPresenter(self.composer) presentViewController:error animated:YES completion:nil];
+            return;
+        }
+        [NSUserDefaults.standardUserDefaults setObject:url.absoluteString forKey:NXCoreURLDefaultsKey];
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)openCore {
+    UIViewController *presenter = NXPresenter(self.composer);
+    if (!presenter) return;
+
+    NSString *value = [NSUserDefaults.standardUserDefaults stringForKey:NXCoreURLDefaultsKey];
+    NSURL *url = [self validatedCoreURLFromString:value ?: @""];
+    if (!url) {
+        [self configureCoreURL];
+        return;
+    }
+
+    SFSafariViewController *browser = [[SFSafariViewController alloc] initWithURL:url];
+    browser.modalPresentationStyle = UIModalPresentationPageSheet;
+    [presenter presentViewController:browser animated:YES completion:nil];
+}
+
+
 - (void)askForPromptWithTitle:(NSString *)title
                   placeholder:(NSString *)placeholder
                        prefix:(NSString *)prefix {
@@ -304,16 +375,28 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     if (!presenter) return;
     UIAlertController *menu =
         [UIAlertController alertControllerWithTitle:@"Nekama"
-                                            message:@"X内蔵Grokを優先して利用します"
+                                            message:@"安定運用はX-Nekama Core（公式xAI API）を使用します。X内蔵Grok連携は実験機能です。"
                                      preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"Grokで投稿文を作る"
+    [menu addAction:[UIAlertAction actionWithTitle:@"X-Nekama Coreを開く"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        [self openCore];
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"Core URLを設定"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        [self configureCoreURL];
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"X内蔵Grokで投稿文を作る（実験）"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self openNativeTextGeneration];
     }]];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"Grokで画像を作る"
+    [menu addAction:[UIAlertAction actionWithTitle:@"X内蔵Grokで画像を作る（実験）"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self openNativeImagine];
