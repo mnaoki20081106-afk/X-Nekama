@@ -14,3 +14,9 @@ jobs:
       - run: node --check server.mjs
       - run: node --check public/app.js
       - run: node --check cloudflare/src/index.mjs
+      - name: Install Cloudflare build dependencies
+        working-directory: cloudflare
+        run: npm install --ignore-scripts
+      - name: Validate Cloudflare bundle
+        working-directory: cloudflare
+        run: npx wrangler deploy --dry-run --config wrangler.ci.toml --outdir .wrangler-dry-run
