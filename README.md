@@ -78,7 +78,7 @@ X上で使える公開投稿の範囲とX側の取得制限に左右されるた
 | `DATA_DIR` | SQLite DBと画像の保存先。初期値 `./data` |
 | `HOST`, `PORT` | バインド先。初期値 `127.0.0.1:3000` |
 
-APIキーとXのCookieはGitHubのファイルに追加しないでください。Grok Imagineの生成画像はbase64で受け取り、X-Nekamaのデータ領域へ保存します。通常のGrokチャット履歴は使用しません。手動で差し替える投稿画像は各5MB以下です。
+APIキーとXのCookieはGitHubのファイルに追加しないでください。Grokの文章生成はResponses APIを `store: false` で利用し、通常のGrokチャット履歴や会話継続用のサーバー保存は使用しません。Grok Imagineの生成結果は一時URLから直ちに取得し、X-Nekamaのデータ領域へ保存します。xAI APIは別途、既定で監査目的の一時保持があるため、保持自体を無効化したい場合はxAI Console側のZero Data Retention設定を利用してください。手動で差し替える投稿画像は各5MB以下です。
 
 ## 検証
 
