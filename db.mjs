@@ -11,9 +11,9 @@ CREATE TABLE IF NOT EXISTS accounts (
  character_name TEXT NOT NULL, age INTEGER, location TEXT DEFAULT '', tone TEXT DEFAULT '',
  personality TEXT DEFAULT '', hobbies TEXT DEFAULT '', bio TEXT DEFAULT '',
  emoji_style TEXT DEFAULT '', ng_topics TEXT DEFAULT '', posting_frequency INTEGER DEFAULT 7,
- active_hours TEXT DEFAULT '10:00-22:00', base_image_id TEXT,
- session_cipher TEXT, session_status TEXT DEFAULT 'unconnected', enabled INTEGER DEFAULT 0,
- auto_approve INTEGER DEFAULT 0,
+ active_hours TEXT DEFAULT '10:00-22:00', gender TEXT DEFAULT '', occupation TEXT DEFAULT '', first_person TEXT DEFAULT '',
+ base_image_id TEXT, session_cipher TEXT, session_status TEXT DEFAULT 'unconnected', enabled INTEGER DEFAULT 0,
+ auto_approve INTEGER DEFAULT 0, auto_generate_images INTEGER DEFAULT 0,
  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS refs (
@@ -48,7 +48,12 @@ CREATE TABLE IF NOT EXISTS publish_locks (
 CREATE INDEX IF NOT EXISTS drafts_due ON drafts(status,scheduled_at);
 CREATE INDEX IF NOT EXISTS ref_posts_ref ON ref_posts(ref_id);
 `);
-if (!db.prepare('PRAGMA table_info(accounts)').all().some(c=>c.name==='auto_approve')) db.exec('ALTER TABLE accounts ADD COLUMN auto_approve INTEGER DEFAULT 0');
+const accountColumns=()=>db.prepare('PRAGMA table_info(accounts)').all();
+if (!accountColumns().some(c=>c.name==='auto_approve')) db.exec('ALTER TABLE accounts ADD COLUMN auto_approve INTEGER DEFAULT 0');
+if (!accountColumns().some(c=>c.name==='auto_generate_images')) db.exec('ALTER TABLE accounts ADD COLUMN auto_generate_images INTEGER DEFAULT 0');
+if (!accountColumns().some(c=>c.name==='gender')) db.exec("ALTER TABLE accounts ADD COLUMN gender TEXT DEFAULT ''");
+if (!accountColumns().some(c=>c.name==='occupation')) db.exec("ALTER TABLE accounts ADD COLUMN occupation TEXT DEFAULT ''");
+if (!accountColumns().some(c=>c.name==='first_person')) db.exec("ALTER TABLE accounts ADD COLUMN first_person TEXT DEFAULT ''");
 const draftColumns=()=>db.prepare('PRAGMA table_info(drafts)').all();
 if (!draftColumns().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
 if (!draftColumns().some(c=>c.name==='content_fingerprint')) db.exec("ALTER TABLE drafts ADD COLUMN content_fingerprint TEXT DEFAULT ''");
