@@ -53,25 +53,6 @@ static UIControl *NXFindImagineControl(UIView *view) {
     return nil;
 }
 
-static id NXControllerTreeObjectRespondingToSelector(UIViewController *controller, SEL selector) {
-    if (!controller) return nil;
-    if ([controller respondsToSelector:selector]) return controller;
-    for (UIViewController *child in controller.childViewControllers) {
-        id match = NXControllerTreeObjectRespondingToSelector(child, selector);
-        if (match) return match;
-    }
-    return nil;
-}
-
-static BOOL NXTriggerNoArgSelector(UIViewController *composer, NSString *selectorName) {
-    SEL selector = NSSelectorFromString(selectorName);
-    id target = NXControllerTreeObjectRespondingToSelector(composer, selector);
-    if (!target) return NO;
-    ((void (*)(id, SEL))objc_msgSend)(target, selector);
-    NSLog(@"[X-Nekama] invoked native selector %@ on %@", selectorName, NSStringFromClass([target class]));
-    return YES;
-}
-
 static BOOL NXControlHasActionToken(UIControl *control, UIControlEvents event, NSString *token) {
     NSString *needle = token.lowercaseString;
     for (id target in control.allTargets) {
@@ -232,9 +213,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
 }
 
 - (void)openNativeImagine {
-    if (NXTriggerNoArgSelector(self.composer, @"postComposerImageGenWithPrompt") ||
-        NXTriggerNoArgSelector(self.composer, @"postComposerImageGen") ||
-        NXTriggerControlAction(self.composer, @"postcomposerimagegenwithprompt") ||
+    if (NXTriggerControlAction(self.composer, @"postcomposerimagegenwithprompt") ||
         NXTriggerControlAction(self.composer, @"postcomposerimagegen")) {
         return;
     }
@@ -251,8 +230,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
 }
 
 - (void)openNativeTextGeneration {
-    if (NXTriggerNoArgSelector(self.composer, @"postComposerTextGen") ||
-        NXTriggerControlAction(self.composer, @"postcomposertextgen")) {
+    if (NXTriggerControlAction(self.composer, @"postcomposertextgen")) {
         return;
     }
 
