@@ -23,9 +23,12 @@ REQUIRED_METHODS = {
             "t1_activeTweetViewController": "@16@0:8",
             "_t1_openGrokImagineViewControllerWithInitialPrompt:": "v24@0:8@16",
             "_t1_syncAIDisclosureForComposition:": "v24@0:8@16",
+            "setGrokImagineLightboxManager:": "v24@0:8@16",
+            "grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:": "v40@0:8@16@24@32",
         },
         "T1TweetComposeSingleTweetViewController": {
             "reloadCompositionText": "v16@0:8",
+            "addOrReplaceAttachment:animated:": "v28@0:8@16B24",
         },
     },
     "Payload/Twitter.app/Frameworks/XAppLibraries.framework/XAppLibraries": {
@@ -36,6 +39,10 @@ REQUIRED_METHODS = {
         "TFNTwitterComposition": {
             "text": "@16@0:8",
             "setText:": "v24@0:8@16",
+            "addAttachment:": "v24@0:8@16",
+        },
+        "_TtC4Grok38GrokImagineLightboxPresentationManager": {
+            "presentWithSourceImages:sourceType:from:sourceView:id:animated:": "v60@0:8@16q24@32@40@48B56",
         },
     },
 }
