@@ -17,17 +17,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 
-CREATE TABLE IF NOT EXISTS oauth_flows (
-  state_hash TEXT PRIMARY KEY,
-  user_id TEXT,
-  mode TEXT NOT NULL CHECK(mode IN ('login','connect')),
-  verifier_cipher TEXT NOT NULL,
-  browser_nonce_hash TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS oauth_flows_expiry ON oauth_flows(expires_at);
-
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -52,9 +41,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   auto_approve INTEGER NOT NULL DEFAULT 0,
   auto_generate_images INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 0,
-  access_token_cipher TEXT NOT NULL,
-  refresh_token_cipher TEXT,
-  token_expires_at TEXT,
+  session_cipher TEXT NOT NULL,
+  session_status TEXT NOT NULL DEFAULT 'connected',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(owner_id, x_user_id)
