@@ -46,6 +46,9 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
 test('delivery policy separates safe retries from ambiguous submits',()=>{
  const rate=classifyDeliveryError(Object.assign(new Error('Too Many Requests'),{status:429,deliveryStage:'submit'}));
  assert.equal(rate.kind,'rate_limit');assert.equal(rate.retryable,true);assert.equal(rate.ambiguous,false);
+ const future=Math.floor(Date.now()/1000)+120;
+ const resetRate=classifyDeliveryError(Object.assign(new Error('429'),{status:429,reset_time:future,deliveryStage:'submit'}));
+ assert.ok(resetRate.retryAfterMs>=90_000&&resetRate.retryAfterMs<=130_000);
  const upload=classifyDeliveryError(Object.assign(new Error('ECONNRESET'),{deliveryStage:'upload'}));
  assert.equal(upload.kind,'transient');assert.equal(upload.retryable,true);
  const submit=classifyDeliveryError(Object.assign(new Error('ECONNRESET'),{deliveryStage:'submit'}));
