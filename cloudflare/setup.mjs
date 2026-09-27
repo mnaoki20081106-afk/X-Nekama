@@ -1,14 +1,13 @@
 import {spawn} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
-import {chmod,readFile,writeFile,unlink} from 'node:fs/promises';
+import {readFile,writeFile} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
-import {tmpdir} from 'node:os';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const configPath=join(here,'wrangler.toml');
-const keyPath=join(here,'.token-encryption-key');
+const urlPath=join(here,'.setup-url');
 const wrangler=['--yes','wrangler@4'];
 const doctor=process.argv.includes('--doctor');
 const nodeMajor=Number(process.versions.node.split('.')[0]);
@@ -110,7 +109,7 @@ async function ensureQueue(name){
  const created=await run(['queues','create',name],{allowFailure:true});
  if(created.code!==0&&!/already|exists|created/i.test(created.all))throw Object.assign(new Error(`Queue作成失敗: ${name}`),{result:created});
 }
-function renderConfig({worker,dbName,dbId,bucket,queue,dlq,baseUrl}){
+function renderConfig({worker,dbName,dbId,bucket,queue,dlq}){
  return `name = "${worker}"
 main = "src/index.mjs"
 compatibility_date = "2026-09-27"
@@ -147,34 +146,7 @@ max_concurrency = 4
 [triggers]
 crons = ["* * * * *"]
 
-[vars]
-PUBLIC_BASE_URL = "${baseUrl}"
 `;
-}
-async function secretExists(){
- const result=await run(['secret','list','--config',configPath],{allowFailure:true,quiet:true});
- return result.code===0&&result.all.includes('TOKEN_ENCRYPTION_KEY');
-}
-async function encryptionKey(){
- if(existsSync(keyPath))return (await readFile(keyPath,'utf8')).trim();
- if(await secretExists()){
-  throw new Error('Cloudflare側にTOKEN_ENCRYPTION_KEYがありますが、ローカルの復旧キーが見つかりません。既存データを壊すため自動ローテーションしません。以前の .token-encryption-key を復元してください。');
- }
- const key=randomBytes(32).toString('base64');
- await writeFile(keyPath,key+'\n',{mode:0o600});
- try{await chmod(keyPath,0o600)}catch{}
- return key;
-}
-async function deployWithSecret(key){
- const secretPath=join(tmpdir(),`x-nekama-secrets-${process.pid}.json`);
- await writeFile(secretPath,JSON.stringify({TOKEN_ENCRYPTION_KEY:key}),{mode:0o600});
- try{
-  return await run(['deploy','--config',configPath,'--secrets-file',secretPath]);
- }finally{await unlink(secretPath).catch(()=>{})}
-}
-function workerUrl(output){
- const urls=output.match(/https:\/\/[A-Za-z0-9._-]+\.workers\.dev\/?/g)||[];
- return urls.at(-1)?.replace(/\/$/,'')||null;
 }
 async function copyText(text){
  const commands=process.platform==='darwin'
@@ -207,13 +179,12 @@ async function doctorRun(){
  const db=config.match(/database_name\s*=\s*"([^"]+)"/)?.[1];
  const bucket=config.match(/bucket_name\s*=\s*"([^"]+)"/)?.[1];
  const queue=config.match(/\nqueue\s*=\s*"([^"]+)"/)?.[1];
- const baseUrl=config.match(/PUBLIC_BASE_URL\s*=\s*"([^"]+)"/)?.[1];
- if(!db||!bucket||!queue||!baseUrl)throw new Error('wrangler.toml の設定が不完全です');
+ const baseUrl=existsSync(urlPath)?(await readFile(urlPath,'utf8')).trim():'';
+ if(!db||!bucket||!queue||!baseUrl)throw new Error('設定が不完全です。先に node setup.mjs を実行してください');
  await run(['d1','info',db,'--json'],{quiet:true});
  await run(['r2','bucket','info',bucket,'--json'],{quiet:true});
  const queues=await run(['queues','list'],{quiet:true});
  if(!queues.all.includes(queue))throw new Error('Queueが見つかりません');
- if(!(await secretExists()))throw new Error('TOKEN_ENCRYPTION_KEY secretが見つかりません');
  await health(baseUrl);
  note(`OK: ${baseUrl}`);
 }
@@ -237,19 +208,15 @@ async function main(){
  await ensureQueue(queue);
  await ensureQueue(dlq);
 
- await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq,baseUrl:'https://pending.invalid'}));
+ await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq}));
  note('D1 migrationを適用');
  await run(['d1','migrations','apply',dbName,'--remote','--config',configPath]);
 
- const key=await encryptionKey();
- note('Workerを初回デプロイ');
- const first=await deployWithSecret(key);
- const url=workerUrl(first.all);
+ note('Workerをデプロイ');
+ const deployed=await run(['deploy','--config',configPath]);
+ const url=workerUrl(deployed.all);
  if(!url)throw new Error('Workers公開URLを自動取得できませんでした。deploy出力を確認してください');
-
- await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq,baseUrl:url}));
- note(`公開URLを自動設定: ${url}`);
- await deployWithSecret(key);
+ await writeFile(urlPath,url+'\n');
 
  await health(url);
  const copied=await copyText(url);
@@ -261,9 +228,7 @@ ${copied?'\nURLをクリップボードへコピーしました。':''}
 
 このURLを改造Xの「✦ Nekama → Core URLを設定」へ入力してください。
 
-重要:
-  ${keyPath}
-はXセッション暗号化の復旧キーです。GitHubへcommitせず、安全な場所へバックアップしてください。
+暗号鍵はWorkerがprivate R2内部に自動生成します。ユーザーがSecretを作る必要はありません。
 
 再診断:
   node setup.mjs --doctor
