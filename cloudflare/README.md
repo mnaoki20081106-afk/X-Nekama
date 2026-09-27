@@ -1,27 +1,41 @@
 # X-Nekama Cloudflare Public Edition
 
-一般公開向けの X-Nekama Core です。既存の Node.js 版とは別に、Cloudflare Workers + D1 + R2 + Queues + Cron で動きます。
+一般公開向けの X-Nekama Core です。Cloudflare Workers + D1 + R2 + Queues + Cron で動きます。
+
+## X接続方式
+
+**X Developer / 有料X APIは使用しません。**
+
+Xへの接続・参考投稿取得・プロフィール確認・画像アップロード・投稿は、リポジトリに同梱している XActions のWebセッション経路を使用します。
+
+- XユーザーID + パスワードでXActionsログイン
+- 追加認証・2FA・captcha等で資格情報ログインが通らない場合は、ログイン済みCookieを入力
+- パスワードは保存しない
+- 接続成功後のCookieだけをAES-256-GCMで暗号化してD1へ保存
+- アカウントを追加するたびにCloudflare環境変数を増やす必要はない
+
+X Web実装が変わると非公式クライアント側の追従が必要になるため、XActions上流とquery ID更新機構を利用して保守します。
 
 ## Security model
 
-公開版では単一の `ADMIN_PASSWORD` を使用しません。
+公開版では単一の ADMIN_PASSWORD を利用者へ共有しません。
 
-- 利用者ログイン: X OAuth 2.0 Authorization Code + PKCE
-- セッション: 256-bit random token。D1 には SHA-256 hash のみ保存
-- X access/refresh token: AES-256-GCM で暗号化して D1 保存
-- 暗号化 AAD: `owner_id + account_id + token type`
-- 全テーブル: `owner_id` でテナント分離
-- 全API: ログイン利用者の `owner_id` を条件に含めて取得・更新
-- R2: public access を有効化しない
-- R2 object key: `owner_id/random-id.ext`
-- 画像取得: Worker が所有権を確認した後だけ R2 binding から返す
+- 初回X接続でXユーザーIDをX-Nekama利用者IDとして登録
+- X-Nekamaセッション: 256-bit random token。D1にはSHA-256 hashのみ保存
+- X Web session Cookie: TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号化
+- 全テーブル: owner_idでテナント分離
+- 全API: ログイン利用者のowner_idを条件に含める
+- R2: public accessを有効化しない
+- R2 object key: owner_id/random-id.ext
+- 画像取得: Workerが所有権確認後だけR2 bindingから返す
 - Browser mutation: exact Origin check
 - Cookies: HttpOnly + Secure + SameSite=Lax
-- レスポンス: X token / xAI key / Cloudflare credential / R2 key / owner_id を返さない
-- Audit: 投稿本文やtokenを保存せず、event kind + object id のみ
-- Queue: 投稿・自動補充をHTTPリクエストから分離
-- DLQ: 3回失敗後に dead-letter queue へ
-- Cron: 1分ごと。予約投稿確認と不足分の補充をQueueへ投入
+- responseにX Cookie / xAI key / Cloudflare credential / R2 key / owner_idを返さない
+- Audit: 投稿本文やCookieを保存せずevent kind + object idのみ
+- Queue: 投稿・参考投稿取得・自動補充をHTTP requestから分離
+- DLQ: 3回失敗後にdead-letter queue
+- Cron: 1分ごとに予約投稿と自動補充を確認
+- xAI利用量: userごとの日次上限をD1で強制
 
 ## Cloudflare resources
 
@@ -38,57 +52,36 @@ npx wrangler queues create x-nekama-tasks
 npx wrangler queues create x-nekama-dlq
 ```
 
-`wrangler.toml.example` を `wrangler.toml` にコピーし、D1作成時に表示された `database_id`、公開URL、X OAuth Client ID を設定してください。
+`wrangler.toml.example` を `wrangler.toml` にコピーし、D1作成時に表示された `database_id` と公開URLを設定してください。
 
 ## Required secrets
 
 ### XAI_API_KEY
-xAI API key。Grok文章生成 / Grok Imagine用。
+
+Grok文章生成 / Grok Imagine用。xAI APIを利用する場合に設定します。
+
+```sh
+npx wrangler secret put XAI_API_KEY
+```
 
 ### TOKEN_ENCRYPTION_KEY
-利用者のX OAuth tokenを暗号化するマスター鍵。32 random bytes をbase64で保存します。
 
-例:
+利用者のX Web session Cookieを暗号化するマスター鍵です。32 random bytesをbase64で保存します。
 
 ```sh
 openssl rand -base64 32
 npx wrangler secret put TOKEN_ENCRYPTION_KEY
 ```
 
-この値を失うと保存済みX tokenを復号できません。GitHub、IPA、D1、R2には保存しません。
-
-### X_CLIENT_SECRET
-X OAuth appをConfidential Clientとして作る場合だけSecretに保存します。
-
-```sh
-npx wrangler secret put XAI_API_KEY
-npx wrangler secret put TOKEN_ENCRYPTION_KEY
-npx wrangler secret put X_CLIENT_SECRET
-```
+この値を失うと保存済みXセッションを復号できません。GitHub、IPA、D1、R2には保存しません。
 
 Cloudflare API TokenはWorker runtimeには不要です。CI/CDに使う場合だけGitHub Actions Secretへ設定します。
-
-## X OAuth
-
-Callback URL:
-
-```
-https://YOUR_DOMAIN/auth/x/callback
-```
-
-要求scope:
-
-```
-users.read tweet.read tweet.write media.write offline.access
-```
-
-初回ログインで本人用workspaceを作り、追加Xアカウントはアプリ内の「キャラクターを追加」から同じOAuthフローで追加します。アカウント追加ごとにCloudflare環境変数を増やす必要はありません。
 
 ## D1 migration
 
 ```sh
 cp wrangler.toml.example wrangler.toml
-# database_id を置換
+# database_id と PUBLIC_BASE_URL を置換
 npm run db:migrate:remote
 ```
 
@@ -99,18 +92,40 @@ npm run check
 npm run deploy
 ```
 
-デプロイ後はR2の **Public Development URL (r2.dev) を有効化しないでください**。Custom DomainもR2 bucketへ直接接続せず、画像はWorker API経由だけで配信します。
+## Xアカウント追加
+
+セットアップ後はアプリ側だけで完結します。
+
+1. 初回画面でXユーザーID + パスワード、またはログイン済みCookieを入力
+2. XActionsがXセッションを検証
+3. X-Nekama用ログインsessionを発行
+4. X Cookieを暗号化してD1保存
+5. 追加アカウントもアプリ内の「キャラクターを追加」から同じ方式で接続
+
+パスワードは接続処理にだけ使い、保存しません。
+
+## R2
+
+R2の Public Development URL (r2.dev) は有効化しないでください。Custom DomainもR2 bucketへ直接接続しません。画像はWorker API経由だけで配信します。
+
+## Default xAI quotas
+
+- text generation: 20 requests / user / day
+- image generation: 10 requests / user / day
+
+`TEXT_GENERATION_DAILY_LIMIT` と `IMAGE_GENERATION_DAILY_LIMIT` で変更できます。
 
 ## Production checklist
 
-- `.dev.vars`, `.env`, `wrangler.toml` の秘密値をGitへcommitしない
+- .dev.vars / .env / wrangler.tomlの秘密値をGitへcommitしない
 - R2 Public Development URL = Disabled
 - R2 custom public domain = None
-- D1/R2/Queueはproduction用とstaging用を分離
-- X OAuth callback URLはproduction domainだけ登録
-- TOKEN_ENCRYPTION_KEYをパスワードマネージャ等でバックアップ
+- stagingとproductionのD1/R2/Queueを分離
+- TOKEN_ENCRYPTION_KEYを安全にバックアップ
 - Cloudflare API Tokenは最小権限
 - GitHub Actions secretをfork PRへ渡さない
-- Cloudflare Workers Logsへtoken、OAuth code、投稿本文、画像データを明示的にlogしない
-- 定期的に失効sessionとOAuth flowを削除（WorkerがCronで実行）
-- 退会処理ではD1 rowとR2 objectを削除する
+- Workers LogsへCookie、パスワード、投稿本文、画像base64をlogしない
+- 利用者Aから利用者Bのaccount/draft/asset/refへアクセスできないことをE2E確認
+- 退会時にD1 rowとR2 objectが削除されることを確認
+
+Cloudflare Workersは2026-08以降の互換日付でNode.js互換が既定有効で、node:fs / node:crypto等が利用できます。XActionsのNode依存部分はWorker内の一時VFSを使って動作し、永続データはD1/R2へ保存します。
