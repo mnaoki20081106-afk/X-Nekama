@@ -20,10 +20,12 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
   r=await send('/api/login','POST',{password:'test-password'});assert.equal(r.res.status,200);cookie=r.res.headers.get('set-cookie').split(';')[0];
   r=await send('/api/accounts','POST',{username:'ai_character',character_name:'ルナ'});assert.equal(r.res.status,201);const id=r.json.id;
   r=await send(`/api/accounts/${id}`,'PATCH',{bio:'現実の人間です'});assert.equal(r.res.status,400);
+  r=await send(`/api/accounts/${id}`,'PATCH',{bio:'架空のAIキャラクターです',activity_interval_days:3});assert.equal(r.res.status,200);
+  r=await send(`/api/accounts/${id}`,'PATCH',{activity_interval_days:0});assert.equal(r.res.status,400);
   r=await send('/api/refs','POST',{username:'reference_ai'});assert.equal(r.res.status,201);
   r=await send('/api/drafts','POST',{account_id:id,text:'架空のAIキャラが夜景を眺めています',scheduled_at:new Date(Date.now()+3600000).toISOString()});assert.equal(r.res.status,201);const draft=r.json.id;
   r=await send(`/api/drafts/${draft}/schedule`,'POST');assert.equal(r.res.status,400);
-  r=await send('/api/state');assert.equal(r.json.accounts[0].character_name,'ルナ');assert.equal(r.json.accounts[0].session_cipher,undefined);assert.equal(r.json.refs[0].username,'reference_ai');
+  r=await send('/api/state');assert.equal(r.json.accounts[0].character_name,'ルナ');assert.equal(r.json.accounts[0].activity_interval_days,3);assert.equal(r.json.accounts[0].session_cipher,undefined);assert.equal(r.json.refs[0].username,'reference_ai');
   const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jSxQAAAAASUVORK5CYII=';
   r=await send('/api/assets','POST',{kind:'style',category:'selfie',data:png});assert.equal(r.res.status,201);const asset=r.json.id;
   const image=await fetch(root+'/api/assets/'+asset,{headers:{cookie}});assert.equal(image.status,200);assert.equal(image.headers.get('content-type'),'image/png');
