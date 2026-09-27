@@ -3,5 +3,3 @@
 XAI_API_KEY=
 # Base64url/base64 encoded 32 random bytes.
 TOKEN_ENCRYPTION_KEY=
-# Required only when the X OAuth app is configured as a confidential client.
-X_CLIENT_SECRET=
