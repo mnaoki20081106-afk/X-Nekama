@@ -1,45 +1,57 @@
 # X-Nekama Cloudflare Public Edition
 
-一般公開向けの X-Nekama Core です。Cloudflare Workers + D1 + R2 + Queues + Cron で動きます。
+一般公開向けの **任意バックエンド** です。
 
-## X接続方式
+Cloudflare版もX DeveloperやxAI APIを使いません。
 
-**X Developer / 有料X APIは使用しません。**
+## 役割
 
-Xへの接続・参考投稿取得・プロフィール確認・画像アップロード・投稿は、リポジトリに同梱している XActions のWebセッション経路を使用します。
+Cloudflare側が担当するのは次だけです。
 
+- 利用者ごとのデータ分離
+- X WebセッションCookieの暗号化保存
+- D1/R2保存
+- 参考投稿取得
+- 予約投稿キュー
+- XActionsによるX投稿
+
+投稿文・文体分析・画像生成は **利用者端末のX/Grok** で行います。
+
+## X接続
+
+- X Developer / 有料X API: 不要
 - XユーザーID + パスワードでXActionsログイン
-- 追加認証・2FA・captcha等で資格情報ログインが通らない場合は、ログイン済みCookieを入力
+- 追加認証/2FA/captcha等が必要ならログイン済みCookie方式
 - パスワードは保存しない
-- 接続成功後のCookieだけをAES-256-GCMで暗号化してD1へ保存
-- アカウントを追加するたびにCloudflare環境変数を増やす必要はない
+- 接続成功後のCookieだけAES-256-GCM暗号化してD1保存
+- アカウント追加ごとのCloudflare環境変数は不要
 
-X Web実装が変わると非公式クライアント側の追従が必要になるため、XActions上流とquery ID更新機構を利用して保守します。
+## Grok生成
+
+共有AIキーはありません。
+
+- WorkerはxAIへ通信しない
+- XAI_API_KEYは不要
+- 生成クォータテーブルも不要
+- X-NekamaがGrok用プロンプト/参照画像パックを返す
+- 利用者が端末のX/Grokで生成
+- JSONまたは生成画像をX-Nekamaへ戻す
 
 ## Security model
 
-公開版では単一の ADMIN_PASSWORD を利用者へ共有しません。
-
-- 初回X接続でXユーザーIDをX-Nekama利用者IDとして登録
-- X-Nekamaセッション: 256-bit random token。D1にはSHA-256 hashのみ保存
+- X-Nekama session: 256-bit random token
+- D1へはsession tokenのSHA-256 hashだけ保存
 - X Web session Cookie: TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号化
-- 全テーブル: owner_idでテナント分離
-- 全API: ログイン利用者のowner_idを条件に含める
-- R2: public accessを有効化しない
-- R2 object key: owner_id/random-id.ext
-- 画像取得: Workerが所有権確認後だけR2 bindingから返す
+- 全データ: owner_idで分離
+- R2: public access無効
+- R2 key: owner_id/random-id.ext
+- 画像取得: Workerで所有権確認後のみ
 - Browser mutation: exact Origin check
 - Cookies: HttpOnly + Secure + SameSite=Lax
-- responseにX Cookie / xAI key / Cloudflare credential / R2 key / owner_idを返さない
-- Audit: 投稿本文やCookieを保存せずevent kind + object idのみ
-- Queue: 投稿・参考投稿取得・自動補充をHTTP requestから分離
-- DLQ: 3回失敗後にdead-letter queue
-- Cron: 1分ごとに予約投稿と自動補充を確認
-- xAI利用量: userごとの日次上限をD1で強制
+- responseへX Cookie / encryption key / R2 key / owner_idを返さない
+- Worker logへパスワード/Cookie/投稿本文/画像base64を出さない
 
 ## Cloudflare resources
-
-一度だけ以下を作ります。
 
 ```sh
 cd cloudflare
@@ -52,80 +64,57 @@ npx wrangler queues create x-nekama-tasks
 npx wrangler queues create x-nekama-dlq
 ```
 
-`wrangler.toml.example` を `wrangler.toml` にコピーし、D1作成時に表示された `database_id` と公開URLを設定してください。
+`wrangler.toml.example` を `wrangler.toml` にコピーし、D1のdatabase_idとPUBLIC_BASE_URLだけ設定します。
 
-## Required secrets
-
-### XAI_API_KEY
-
-Grok文章生成 / Grok Imagine用。xAI APIを利用する場合に設定します。
-
-```sh
-npx wrangler secret put XAI_API_KEY
-```
+## Required secret
 
 ### TOKEN_ENCRYPTION_KEY
-
-利用者のX Web session Cookieを暗号化するマスター鍵です。32 random bytesをbase64で保存します。
 
 ```sh
 openssl rand -base64 32
 npx wrangler secret put TOKEN_ENCRYPTION_KEY
 ```
 
-この値を失うと保存済みXセッションを復号できません。GitHub、IPA、D1、R2には保存しません。
-
-Cloudflare API TokenはWorker runtimeには不要です。CI/CDに使う場合だけGitHub Actions Secretへ設定します。
-
-## D1 migration
-
-```sh
-cp wrangler.toml.example wrangler.toml
-# database_id と PUBLIC_BASE_URL を置換
-npm run db:migrate:remote
-```
+X WebセッションCookieの暗号化だけに使います。
 
 ## Deploy
 
 ```sh
 npm run check
+npm run db:migrate:remote
 npm run deploy
 ```
 
-## Xアカウント追加
-
-セットアップ後はアプリ側だけで完結します。
-
-1. 初回画面でXユーザーID + パスワード、またはログイン済みCookieを入力
-2. XActionsがXセッションを検証
-3. X-Nekama用ログインsessionを発行
-4. X Cookieを暗号化してD1保存
-5. 追加アカウントもアプリ内の「キャラクターを追加」から同じ方式で接続
-
-パスワードは接続処理にだけ使い、保存しません。
-
 ## R2
 
-R2の Public Development URL (r2.dev) は有効化しないでください。Custom DomainもR2 bucketへ直接接続しません。画像はWorker API経由だけで配信します。
+- Public Development URL (r2.dev): Disabled
+- Public Custom Domain: None
+- 画像はWorker API経由のみ
 
-## Default xAI quotas
+## Cron / Queue
 
-- text generation: 20 requests / user / day
-- image generation: 10 requests / user / day
+CronはAI生成を行いません。
 
-`TEXT_GENERATION_DAILY_LIMIT` と `IMAGE_GENERATION_DAILY_LIMIT` で変更できます。
+- 期限切れX-Nekama session削除
+- 予約時刻を迎えた投稿をQueueへ投入
+- QueueでXActions投稿
+
+参考投稿取得もQueueで処理します。
+
+## 費用について
+
+このCloudflare版は運営のX API/xAI API費用を発生させません。
+
+ただしCloudflare自体の利用量・契約プランによる費用可能性は別です。**厳密に運営費0を要求する配布形態では、Cloudflare版を必須にはしません。**
 
 ## Production checklist
 
-- .dev.vars / .env / wrangler.tomlの秘密値をGitへcommitしない
-- R2 Public Development URL = Disabled
-- R2 custom public domain = None
-- stagingとproductionのD1/R2/Queueを分離
-- TOKEN_ENCRYPTION_KEYを安全にバックアップ
-- Cloudflare API Tokenは最小権限
-- GitHub Actions secretをfork PRへ渡さない
-- Workers LogsへCookie、パスワード、投稿本文、画像base64をlogしない
-- 利用者Aから利用者Bのaccount/draft/asset/refへアクセスできないことをE2E確認
-- 退会時にD1 rowとR2 objectが削除されることを確認
-
-Cloudflare Workersは2026-08以降の互換日付でNode.js互換が既定有効で、node:fs / node:crypto等が利用できます。XActionsのNode依存部分はWorker内の一時VFSを使って動作し、永続データはD1/R2へ保存します。
+- TOKEN_ENCRYPTION_KEYをGitへcommitしない
+- R2 public access無効
+- staging/production分離
+- Workers LogsへCookie/パスワードを出さない
+- User AからUser Bのaccount/draft/asset/refへアクセス不可
+- 退会時にD1 row/R2 object削除
+- XActions text-only実投稿確認
+- XActions画像付き実投稿確認
+- Grokパック生成/JSON取込確認
