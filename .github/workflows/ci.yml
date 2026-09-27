@@ -21,3 +21,5 @@ jobs:
       - name: Validate Cloudflare bundle
         working-directory: cloudflare
         run: npx wrangler deploy --dry-run --config wrangler.ci.toml --outdir .wrangler-dry-run
+      - name: Validate Deploy-to-Cloudflare template
+        run: npx --yes wrangler@4.102.0 deploy --dry-run --config wrangler.toml --outdir .wrangler-template-dry-run
