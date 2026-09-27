@@ -151,6 +151,11 @@ async function connectXSession(request,env){
   const cipher=await seal(env,resolved.cookies,`${ownerId}:${accountId}:session`);
   const character=account?.character_name||who.name||who.username;
   const bio=account?.bio||`架空のAIキャラクター｜${character}`;
+  try{
+    await xactions.ensureBio(resolved.cookies,who.username,bio);
+  }catch(error){
+    throw Object.assign(new Error('x_profile_disclosure_failed'),{status:400});
+  }
   if(account){
     await env.DB.prepare(`UPDATE accounts SET username=?,display_name=?,session_cipher=?,session_status='connected',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
       .bind(who.username,who.name||who.username,cipher,accountId,ownerId).run();
@@ -249,6 +254,14 @@ async function patchAccount(request,env,user,id){
   const bio=String((values.bio??current.bio)||'');
   if(!/AI/i.test(bio)||!/(架空|バーチャル)/.test(bio))return problem(400,'プロフィールに架空のAIキャラクターである旨を記載してください');
   if(!Object.keys(values).length)return problem(400,'変更項目がありません');
+  if('bio' in values && values.bio!==current.bio){
+    try{
+      const cookies=await accountSession(env,current);
+      await xactions.ensureBio(cookies,current.username,String(values.bio));
+    }catch{
+      return problem(502,'XプロフィールのAI表記を更新できませんでした');
+    }
+  }
   const keys=Object.keys(values),sql=`UPDATE accounts SET ${keys.map(k=>k+'=?').join(',')},updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`;
   await env.DB.prepare(sql).bind(...keys.map(k=>values[k]??''),id,user.id).run();
   await audit(env,user.id,'account_update',id);
@@ -741,6 +754,7 @@ export default {
         if(error?.message==='cookie_login_required')return problem(400,'このXアカウントは追加認証が必要です。ログイン済みCookieで接続してください');
         if(error?.message==='x_account_mismatch')return problem(400,'選択したアカウントとXセッションが一致しません');
         if(error?.message==='x_login_failed')return problem(400,'Xへのログインに失敗しました。Cookie接続も試してください');
+        if(error?.message==='x_profile_disclosure_failed')return problem(400,'Xプロフィールへ架空AIキャラクター表記を反映できませんでした');
         return problem(400,'入力内容を確認してください');
       }
       return problem(500,'処理に失敗しました');
