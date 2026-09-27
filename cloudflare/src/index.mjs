@@ -312,7 +312,10 @@ async function patchAccount(request,env,user,id){
 async function createAsset(request,env,user){
   const body=await readJson(request),accountId=body.account_id||null;
   if(accountId)await ownedAccount(env,user.id,accountId);
-  const kind=['base','style','generated'].includes(body.kind)?body.kind:'style';
+  const kind=body.kind==='base'?'base':'style';
+  const categories=new Set(['purikura','bereal','selfie','mirror','candid','phone_case','outfit','accessory','background']);
+  if(kind==='base'&&!accountId)return problem(400,'キャラクターを選択してください');
+  if(kind==='style'&&!categories.has(String(body.category||'')))return problem(400,'画像カテゴリを選択してください');
   const {bytes,mime}=imageInfo(body.data);
   const id=uid(),key=`${user.id}/${id}.${extFor(mime)}`;
   await env.MEDIA.put(key,bytes,{httpMetadata:{contentType:mime,cacheControl:'private, no-store'},customMetadata:{owner:user.id,asset:id}});
