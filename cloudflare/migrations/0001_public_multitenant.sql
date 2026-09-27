@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS oauth_flows (
   user_id TEXT,
   mode TEXT NOT NULL CHECK(mode IN ('login','connect')),
   verifier_cipher TEXT NOT NULL,
+  browser_nonce_hash TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
