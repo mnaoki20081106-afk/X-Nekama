@@ -15,6 +15,12 @@ function numericStatus(error){
 }
 
 function retryAfterMs(error){
+ const reset=error?.reset_time??error?.resetTime??error?.response?.headers?.get?.('x-rate-limit-reset');
+ const resetNumber=Number(reset);
+ if(Number.isFinite(resetNumber)&&resetNumber>0){
+  const at=resetNumber>10_000_000_000?resetNumber:resetNumber*1000;
+  if(at>Date.now())return at-Date.now();
+ }
  const raw=error?.retryAfterMs??error?.retry_after_ms??error?.response?.headers?.get?.('retry-after');
  if(raw==null)return 0;
  const n=Number(raw);
