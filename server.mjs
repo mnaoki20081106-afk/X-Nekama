@@ -81,18 +81,21 @@ async function generateBatch(a,count){
  const posts=await ai.generateWeek(a,refs,history,new Date().toISOString(),count);
  db.exec('BEGIN');const ids=[];
  try{for(const p of posts){const id=uid(),prompt=ai.imagePrompt(a,p,all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));run('INSERT INTO drafts(id,account_id,text,image_style,scheduled_at,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,a.id,p.text,p.image_style,p.scheduled_at,prompt,fingerprintPost(p.text));ids.push(id)}db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}
- if(a.auto_approve){for(const id of ids){let d=row('SELECT * FROM drafts WHERE id=?',id);try{
-   if(d.image_style){
-    if(!a.auto_generate_images)continue;
-    await generateDraftImage(d);
-    d=row('SELECT * FROM drafts WHERE id=?',id);
-    if(!d.image_id)throw Error('Grok画像生成後の画像を確認できませんでした');
-   }
+ if(a.auto_generate_images){
+  for(const id of ids){
+   const d=row('SELECT * FROM drafts WHERE id=?',id);
+   if(!d?.image_style)continue;
+   try{await generateDraftImage(d)}
+   catch(e){run("UPDATE drafts SET error=?,updated_at=datetime('now') WHERE id=?",('Grok画像生成: '+String(e.message||e)).slice(0,500),id)}
+  }
+ }
+ if(a.auto_approve){for(const id of ids){const d=row('SELECT * FROM drafts WHERE id=?',id);try{
+   if(d.image_style&&!d.image_id)continue;
    if(new Date(d.scheduled_at).getTime()<Date.now()+60000)throw Error('予定日時を過ぎました');
    const fp=ensureNoQueuedDuplicate(d);
    run("UPDATE drafts SET status='scheduled',content_fingerprint=?,queue_key=COALESCE(queue_key,?),attempt_count=0,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",fp,uid(),id);
   }catch(e){run("UPDATE drafts SET status='needs_review',error=? WHERE id=?",String(e.message||e).slice(0,500),id)}}}
- return `${posts.length}件の投稿案を保存${a.auto_approve?'（自動承認を適用）':''}`;
+ return `${posts.length}件の投稿案を保存${a.auto_generate_images?'（Grok画像生成を適用）':''}${a.auto_approve?'（自動承認を適用）':''}`;
 }
  async function publishDue(){
  const now=new Date().toISOString();
