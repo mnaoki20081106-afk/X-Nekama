@@ -6,6 +6,7 @@ import {randomBytes,scryptSync,timingSafeEqual,createCipheriv,createDecipheriv,c
 import {db,dataDir,uid,row,all,run,publicAccount} from './db.mjs';
 import * as x from './x.mjs';
 import * as ai from './ai.mjs';
+import {fingerprintPost,classifyDeliveryError,retryDelayMs} from './delivery.mjs';
 const port=Number(process.env.PORT||3000),host=process.env.HOST||'127.0.0.1';
 const secretFile=join(dataDir,'.app-secret');
 const secret=process.env.APP_SECRET||(()=>{if(existsSync(secretFile))return readFileSync(secretFile,'utf8');const s=randomBytes(32).toString('hex');writeFileSync(secretFile,s,{mode:0o600,flag:'wx'});return s})();
@@ -23,6 +24,18 @@ function json(res,code,data){res.writeHead(code,{'content-type':'application/jso
 function fail(code,message){const e=new Error(message);e.status=code;throw e}
 async function body(req,max=8e6){let chunks=[],size=0;for await(const c of req){size+=c.length;if(size>max)fail(413,'データが大きすぎます');chunks.push(c)}try{return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}')}catch{fail(400,'JSONを確認してください')}}
 function requireAccount(id){const a=row('SELECT * FROM accounts WHERE id=?',id);if(!a)fail(404,'アカウントが見つかりません');return a}
+const MAX_DELIVERY_ATTEMPTS=3;
+function ensureNoQueuedDuplicate(draft){
+ const fp=draft.content_fingerprint||fingerprintPost(draft.text);
+ const duplicate=all("SELECT id,text,status FROM drafts WHERE account_id=? AND id<>? AND status IN ('scheduled','publishing')",draft.account_id,draft.id).find(other=>fingerprintPost(other.text)===fp);
+ if(duplicate)fail(409,'同じ本文の投稿がこのアカウントですでに予約または送信処理中です');
+ return fp;
+}
+function acquirePublishLock(accountId,draftId){
+ run("DELETE FROM publish_locks WHERE locked_at<datetime('now','-20 minutes')");
+ return !!run("INSERT OR IGNORE INTO publish_locks(account_id,draft_id,locked_at) VALUES(?,?,datetime('now'))",accountId,draftId).changes;
+}
+function releasePublishLock(accountId,draftId){run('DELETE FROM publish_locks WHERE account_id=? AND draft_id=?',accountId,draftId)}
 const categories=new Set(['purikura','bereal','selfie','mirror','candid']);
 function imageBytes(input){const m=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(input||'');if(!m)fail(400,'JPEG・PNG・WebP画像を選択してください');const buf=Buffer.from(m[2],'base64');if(!buf.length||buf.length>5*1024*1024)fail(413,'画像は5MB以下にしてください');const real=(buf[0]===0xff&&buf[1]===0xd8)?'image/jpeg':(buf[0]===0x89&&buf[1]===0x50)?'image/png':(buf.toString('ascii',0,4)==='RIFF'&&buf.toString('ascii',8,12)==='WEBP')?'image/webp':null;if(real!==m[1])fail(400,'画像データが不正です');return {buf,mime:real}}
 async function addAsset({data,kind,category,accountId,name}){const {buf,mime}=imageBytes(data);const id=uid(),filename=id+({'image/png':'.png','image/jpeg':'.jpg','image/webp':'.webp'}[mime]);await writeFile(join(dataDir,'assets',filename),buf,{mode:0o600,flag:'wx'});run('INSERT INTO assets(id,kind,category,account_id,name,mime,filename) VALUES(?,?,?,?,?,?,?)',id,kind,category||null,accountId||null,name||'',mime,filename);return id}
@@ -34,15 +47,48 @@ async function generateBatch(a,count){
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
  const posts=await ai.generateWeek(a,refs,history,new Date().toISOString(),count);
  db.exec('BEGIN');const ids=[];
- try{for(const p of posts){const id=uid(),prompt=ai.imagePrompt(a,p,all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));run('INSERT INTO drafts(id,account_id,text,image_style,scheduled_at,image_prompt) VALUES(?,?,?,?,?,?)',id,a.id,p.text,p.image_style,p.scheduled_at,prompt);ids.push(id)}db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}
+ try{for(const p of posts){const id=uid(),prompt=ai.imagePrompt(a,p,all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));run('INSERT INTO drafts(id,account_id,text,image_style,scheduled_at,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,a.id,p.text,p.image_style,p.scheduled_at,prompt,fingerprintPost(p.text));ids.push(id)}db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}
  if(a.auto_approve){for(const id of ids){const d=row('SELECT * FROM drafts WHERE id=?',id);try{
    if(d.image_style)continue;
    if(new Date(d.scheduled_at).getTime()<Date.now()+60000)throw Error('予定日時を過ぎました');
-   run("UPDATE drafts SET status='scheduled',updated_at=datetime('now') WHERE id=?",id);
+   const fp=ensureNoQueuedDuplicate(d);
+   run("UPDATE drafts SET status='scheduled',content_fingerprint=?,queue_key=COALESCE(queue_key,?),attempt_count=0,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",fp,uid(),id);
   }catch(e){run("UPDATE drafts SET status='needs_review',error=? WHERE id=?",String(e.message||e).slice(0,500),id)}}}
  return `${posts.length}件の投稿案を保存${a.auto_approve?'（自動承認を適用）':''}`;
 }
- async function publishDue(){const due=all("SELECT * FROM drafts WHERE status='scheduled' AND scheduled_at<=? ORDER BY scheduled_at LIMIT 5",new Date().toISOString());for(const d of due){const a=requireAccount(d.account_id);if(!a.enabled||!a.session_cipher)continue;const claim=run("UPDATE drafts SET status='publishing',attempt_count=attempt_count+1,updated_at=datetime('now') WHERE id=? AND status='scheduled'",d.id);if(!claim.changes)continue;try{const asset=d.image_id?row('SELECT * FROM assets WHERE id=?',d.image_id):null;if(d.image_style&&!asset)throw Error('投稿画像が未設定です。画像をセットしてから再予約してください');const cookies=decrypt(a.session_cipher);await x.checkBio(cookies,a.username);const xId=await x.publish(cookies,d.text,asset&&join(dataDir,'assets',asset.filename),`架空AIキャラクター ${a.character_name} の生成画像`);run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),error=NULL,updated_at=datetime('now') WHERE id=?",xId,d.id)}catch(e){console.error('publish:',e);run("UPDATE drafts SET status='failed',error=?,updated_at=datetime('now') WHERE id=?",String(e.message||e).slice(0,500),d.id)}}}
+ async function publishDue(){
+ const now=new Date().toISOString();
+ const due=all("SELECT * FROM drafts WHERE status='scheduled' AND scheduled_at<=? AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,scheduled_at),scheduled_at LIMIT 10",now,now);
+ for(const d of due){
+  const a=requireAccount(d.account_id);
+  if(!a.enabled||!a.session_cipher)continue;
+  if(!acquirePublishLock(a.id,d.id))continue;
+  let claimed=false;
+  try{
+   const claim=run("UPDATE drafts SET status='publishing',attempt_count=attempt_count+1,last_attempt_at=datetime('now'),updated_at=datetime('now') WHERE id=? AND status='scheduled'",d.id);
+   if(!claim.changes)continue;
+   claimed=true;
+   const asset=d.image_id?row('SELECT * FROM assets WHERE id=?',d.image_id):null;
+   if(d.image_style&&!asset)throw Error('投稿画像が未設定です。画像をセットしてから再予約してください');
+   const cookies=decrypt(a.session_cipher);
+   await x.checkBio(cookies,a.username);
+   const xId=await x.publish(cookies,d.text,asset&&join(dataDir,'assets',asset.filename),`架空AIキャラクター ${a.character_name} の生成画像`);
+   run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",xId,d.id);
+  }catch(e){
+   console.error('publish:',e);
+   if(!claimed)continue;
+   const attempt=Number(d.attempt_count||0)+1;
+   const info=classifyDeliveryError(e,e?.deliveryStage||'preflight');
+   if(info.retryable&&attempt<MAX_DELIVERY_ATTEMPTS){
+    const next=new Date(Date.now()+retryDelayMs(info.kind,attempt,info.retryAfterMs)).toISOString();
+    run("UPDATE drafts SET status='scheduled',next_attempt_at=?,last_error_kind=?,error=?,updated_at=datetime('now') WHERE id=?",next,info.kind,`再試行待ち: ${info.message}`.slice(0,500),d.id);
+   }else{
+    const prefix=info.ambiguous?'送信結果を確認できません。X上の投稿有無を確認してください。 ':'';
+    run("UPDATE drafts SET status='failed',next_attempt_at=NULL,last_error_kind=?,error=?,updated_at=datetime('now') WHERE id=?",info.kind,(prefix+info.message).slice(0,500),d.id);
+   }
+  }finally{releasePublishLock(a.id,d.id)}
+ }
+}
 function replenish(){if(!process.env.GEMINI_API_KEY)return;for(const a of all('SELECT * FROM accounts WHERE enabled=1 AND session_cipher IS NOT NULL')){
  const recent=row("SELECT id FROM jobs WHERE account_id=? AND kind='auto-weekly-plan' AND created_at>=datetime('now','-6 days') ORDER BY created_at DESC LIMIT 1",a.id);
  if(recent)continue;
@@ -99,16 +145,16 @@ const server=http.createServer(async(req,res)=>{try{
  m=path.match(/^\/api\/assets\/([^/]+)$/);
  if(m&&method==='DELETE'){const a=row('SELECT * FROM assets WHERE id=?',m[1]);if(!a)fail(404,'画像なし');run('DELETE FROM assets WHERE id=?',a.id);await unlink(join(dataDir,'assets',a.filename)).catch(()=>{});return json(res,200,{ok:true})}
  if(method==='POST'&&path==='/api/generate-week'){const b=await body(req),a=requireAccount(b.account_id);const count=Math.min(21,Math.max(1,Number(b.count)||Number(a.posting_frequency)||7));const job=addJob(a.id,'weekly-plan',()=>generateBatch(a,count));return json(res,202,{job})}
- if(method==='POST'&&path==='/api/drafts'){const b=await body(req),a=requireAccount(b.account_id);if(!String(b.text||'').trim()||String(b.text).length>280)fail(400,'投稿文を280文字以内で入力してください');const id=uid(),style=categories.has(b.image_style)?b.image_style:null,text=String(b.text).trim();run('INSERT INTO drafts(id,account_id,text,scheduled_at,image_style,image_prompt) VALUES(?,?,?,?,?,?)',id,b.account_id,text,b.scheduled_at||null,style,ai.imagePrompt(a,{text,image_style:style},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC")));return json(res,201,{id})}
+ if(method==='POST'&&path==='/api/drafts'){const b=await body(req),a=requireAccount(b.account_id);if(!String(b.text||'').trim()||String(b.text).length>280)fail(400,'投稿文を280文字以内で入力してください');const id=uid(),style=categories.has(b.image_style)?b.image_style:null,text=String(b.text).trim();run('INSERT INTO drafts(id,account_id,text,scheduled_at,image_style,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,b.account_id,text,b.scheduled_at||null,style,ai.imagePrompt(a,{text,image_style:style},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC")),fingerprintPost(text));return json(res,201,{id})}
  m=path.match(/^\/api\/drafts\/([^/]+)$/);
- if(m&&method==='PATCH'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review'&&d.status!=='scheduled')fail(409,'先に投稿状況を確認してください');const b=await body(req),allowed=['text','scheduled_at','image_style','image_prompt'];const changes=Object.fromEntries(allowed.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(changes.text!=null&&(!String(changes.text).trim()||String(changes.text).length>280))fail(400,'投稿文を280文字以内で入力してください');if(changes.image_style&&!categories.has(changes.image_style))fail(400,'画像カテゴリが不正です');if(changes.image_prompt!=null&&String(changes.image_prompt).length>5000)fail(400,'画像プロンプトは5000文字以内にしてください');const styleChanged=Object.hasOwn(changes,'image_style')&&(changes.image_style||null)!==(d.image_style||null),oldImageId=styleChanged?d.image_id:null;if(styleChanged)changes.image_id=null;if(Object.hasOwn(changes,'image_style')&&!changes.image_style){changes.image_style=null;changes.image_prompt=''}else if((Object.hasOwn(changes,'text')||Object.hasOwn(changes,'image_style'))&&!Object.hasOwn(changes,'image_prompt'))changes.image_prompt=ai.imagePrompt(requireAccount(d.account_id),{...d,...changes},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));if(!Object.keys(changes).length)fail(400,'変更項目がありません');run(`UPDATE drafts SET ${Object.keys(changes).map(k=>`${k}=?`).join(',')},status='needs_review',error=NULL,updated_at=datetime('now') WHERE id=?`,...Object.values(changes),d.id);await removeUploadedAssetIfUnused(oldImageId);return json(res,200,{ok:true})}
+ if(m&&method==='PATCH'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review'&&d.status!=='scheduled')fail(409,'先に投稿状況を確認してください');const b=await body(req),allowed=['text','scheduled_at','image_style','image_prompt'];const changes=Object.fromEntries(allowed.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(changes.text!=null&&(!String(changes.text).trim()||String(changes.text).length>280))fail(400,'投稿文を280文字以内で入力してください');if(changes.text!=null){changes.text=String(changes.text).trim();changes.content_fingerprint=fingerprintPost(changes.text)}if(changes.image_style&&!categories.has(changes.image_style))fail(400,'画像カテゴリが不正です');if(changes.image_prompt!=null&&String(changes.image_prompt).length>5000)fail(400,'画像プロンプトは5000文字以内にしてください');const styleChanged=Object.hasOwn(changes,'image_style')&&(changes.image_style||null)!==(d.image_style||null),oldImageId=styleChanged?d.image_id:null;if(styleChanged)changes.image_id=null;if(Object.hasOwn(changes,'image_style')&&!changes.image_style){changes.image_style=null;changes.image_prompt=''}else if((Object.hasOwn(changes,'text')||Object.hasOwn(changes,'image_style'))&&!Object.hasOwn(changes,'image_prompt'))changes.image_prompt=ai.imagePrompt(requireAccount(d.account_id),{...d,...changes},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));if(!Object.keys(changes).length)fail(400,'変更項目がありません');run(`UPDATE drafts SET ${Object.keys(changes).map(k=>`${k}=?`).join(',')},status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',attempt_count=0,error=NULL,updated_at=datetime('now') WHERE id=?`,...Object.values(changes),d.id);await removeUploadedAssetIfUnused(oldImageId);return json(res,200,{ok:true})}
  if(m&&method==='DELETE'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review'&&d.status!=='scheduled')fail(409,'先に投稿状況を確認してください');run('DELETE FROM drafts WHERE id=?',d.id);await removeUploadedAssetIfUnused(d.image_id);return json(res,200,{ok:true})}
  m=path.match(/^\/api\/drafts\/([^/]+)\/schedule$/);
- if(m&&method==='POST'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');const b=await body(req),a=requireAccount(d.account_id);if(!a.session_cipher||!a.enabled)fail(400,'X接続と運用ONが必要です');const date=new Date(b.scheduled_at||d.scheduled_at);if(!Number.isFinite(date.getTime())||date.getTime()<Date.now()+60000)fail(400,'予約日時は1分以上先にしてください');if(d.image_style&&!d.image_id)fail(400,'画像が未設定です。先に投稿画像をアップロードしてください');if(d.status!=='needs_review')fail(409,'予約できない状態です');run("UPDATE drafts SET status='scheduled',scheduled_at=?,error=NULL,updated_at=datetime('now') WHERE id=?",date.toISOString(),d.id);return json(res,200,{ok:true})}
+ if(m&&method==='POST'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');const b=await body(req),a=requireAccount(d.account_id);if(!a.session_cipher||!a.enabled)fail(400,'X接続と運用ONが必要です');const date=new Date(b.scheduled_at||d.scheduled_at);if(!Number.isFinite(date.getTime())||date.getTime()<Date.now()+60000)fail(400,'予約日時は1分以上先にしてください');if(d.image_style&&!d.image_id)fail(400,'画像が未設定です。先に投稿画像をアップロードしてください');if(d.status!=='needs_review')fail(409,'予約できない状態です');const fp=ensureNoQueuedDuplicate(d);run("UPDATE drafts SET status='scheduled',scheduled_at=?,content_fingerprint=?,queue_key=?,attempt_count=0,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",date.toISOString(),fp,uid(),d.id);return json(res,200,{ok:true})}
  m=path.match(/^\/api\/drafts\/([^/]+)\/unschedule$/);
- if(m&&method==='POST'){const result=run("UPDATE drafts SET status='needs_review',updated_at=datetime('now') WHERE id=? AND status='scheduled'",m[1]);if(!result.changes)fail(409,'予約を解除できません');return json(res,200,{ok:true})}
+ if(m&&method==='POST'){const result=run("UPDATE drafts SET status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',attempt_count=0,error=NULL,updated_at=datetime('now') WHERE id=? AND status='scheduled'",m[1]);if(!result.changes)fail(409,'予約を解除できません');return json(res,200,{ok:true})}
  m=path.match(/^\/api\/drafts\/([^/]+)\/resolve$/);
- if(m&&method==='POST'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d||!['failed','publishing'].includes(d.status))fail(409,'確認対象の投稿ではありません');const b=await body(req);if(b.outcome==='posted'){if(!/^\d{10,25}$/.test(String(b.x_post_id||'')))fail(400,'Xの投稿IDを入力してください');run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),error=NULL WHERE id=?",String(b.x_post_id),d.id)}else if(b.outcome==='not_posted'){run("UPDATE drafts SET status='needs_review',scheduled_at=NULL,error=NULL WHERE id=?",d.id)}else fail(400,'X上の投稿状況を選択してください');return json(res,200,{ok:true})}
+ if(m&&method==='POST'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d||!['failed','publishing'].includes(d.status))fail(409,'確認対象の投稿ではありません');const b=await body(req);if(b.outcome==='posted'){if(!/^\d{10,25}$/.test(String(b.x_post_id||'')))fail(400,'Xの投稿IDを入力してください');run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),next_attempt_at=NULL,last_error_kind='',error=NULL WHERE id=?",String(b.x_post_id),d.id)}else if(b.outcome==='not_posted'){run("UPDATE drafts SET status='needs_review',scheduled_at=NULL,queue_key=NULL,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',attempt_count=0,error=NULL WHERE id=?",d.id)}else fail(400,'X上の投稿状況を選択してください');return json(res,200,{ok:true})}
  m=path.match(/^\/api\/drafts\/([^/]+)\/image$/);
  if(m&&method==='POST'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review')fail(409,'レビュー待ちの投稿だけ画像を設定できます');if(!d.image_style)fail(400,'この投稿はテキスト投稿です。先に画像タイプを選択してください');const b=await body(req),id=await addAsset({data:b.data,kind:'style',category:'uploaded',accountId:d.account_id,name:String(b.name||'投稿画像').slice(0,100)}),old=d.image_id;try{run("UPDATE drafts SET image_id=?,error=NULL,updated_at=datetime('now') WHERE id=?",id,d.id)}catch(e){const a=row('SELECT * FROM assets WHERE id=?',id);run('DELETE FROM assets WHERE id=?',id);if(a)await unlink(join(dataDir,'assets',a.filename)).catch(()=>{});throw e}await removeUploadedAssetIfUnused(old);return json(res,201,{id})}
  if(m&&method==='DELETE'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review')fail(409,'レビュー待ちの投稿だけ画像を外せます');const old=d.image_id;run("UPDATE drafts SET image_id=NULL,error=NULL,updated_at=datetime('now') WHERE id=?",d.id);await removeUploadedAssetIfUnused(old);return json(res,200,{ok:true})}
