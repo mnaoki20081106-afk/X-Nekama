@@ -1,5 +1,7 @@
+import * as xactions from '../../x.mjs';
+import {writeFile,unlink} from 'node:fs/promises';
+
 const SESSION_COOKIE='nk_session';
-const OAUTH_COOKIE='nk_oauth';
 const SESSION_DAYS=30;
 const MAX_IMAGE_BYTES=5*1024*1024;
 const textEncoder=new TextEncoder();
@@ -31,8 +33,6 @@ function sessionCookie(token,maxAge=SESSION_DAYS*86400){
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 function clearSessionCookie(){return `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`}
-function oauthCookie(token,maxAge=600){return `${OAUTH_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/auth/x/; Max-Age=${maxAge}`}
-function clearOAuthCookie(){return `${OAUTH_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/auth/x/; Max-Age=0`}
 function originAllowed(request,env){
   if(['GET','HEAD','OPTIONS'].includes(request.method))return true;
   const origin=request.headers.get('origin');
@@ -87,71 +87,81 @@ async function deleteSession(request,env){
   const token=cookieValue(request,SESSION_COOKIE);if(!token)return;
   await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await sha256(token)).run();
 }
-async function xApi(token,path,options={}){
-  const response=await fetch('https://api.x.com'+path,{
-    ...options,
-    headers:{authorization:`Bearer ${token}`,...(options.headers||{})}
-  });
-  const data=await response.json().catch(()=>({}));
-  if(!response.ok){
-    const error=new Error(data?.detail||data?.title||data?.errors?.[0]?.message||`X API HTTP ${response.status}`);
-    error.status=response.status;throw error;
-  }
-  return data;
-}
-async function xMe(token){
-  const result=await xApi(token,'/2/users/me?user.fields=name,username,description');
-  if(!result?.data?.id||!result.data.username)throw new Error('X user unavailable');
-  return result.data;
-}
-async function oauthHeaders(env){
-  if(!env.X_CLIENT_SECRET)return {'content-type':'application/x-www-form-urlencoded'};
-  return {
-    'content-type':'application/x-www-form-urlencoded',
-    authorization:'Basic '+btoa(`${env.X_CLIENT_ID}:${env.X_CLIENT_SECRET}`)
-  };
-}
-async function exchangeCode(env,code,verifier){
-  const body=new URLSearchParams({
-    grant_type:'authorization_code',
-    code,
-    redirect_uri:new URL('/auth/x/callback',env.PUBLIC_BASE_URL).toString(),
-    code_verifier:verifier,
-    client_id:env.X_CLIENT_ID
-  });
-  const response=await fetch('https://api.x.com/2/oauth2/token',{method:'POST',headers:await oauthHeaders(env),body});
-  const result=await response.json().catch(()=>({}));
-  if(!response.ok||!result.access_token)throw new Error('OAuth token exchange failed');
-  return result;
-}
-async function refreshXToken(env,account){
-  if(!account.refresh_token_cipher)throw new Error('X refresh token unavailable');
-  const refreshToken=await open(env,account.refresh_token_cipher,`${account.owner_id}:${account.id}:refresh`);
-  const body=new URLSearchParams({grant_type:'refresh_token',refresh_token:refreshToken,client_id:env.X_CLIENT_ID});
-  const response=await fetch('https://api.x.com/2/oauth2/token',{method:'POST',headers:await oauthHeaders(env),body});
-  const result=await response.json().catch(()=>({}));
-  if(!response.ok||!result.access_token)throw new Error('X token refresh failed');
-  const accessCipher=await seal(env,result.access_token,`${account.owner_id}:${account.id}:access`);
-  const refreshCipher=result.refresh_token
-    ?await seal(env,result.refresh_token,`${account.owner_id}:${account.id}:refresh`)
-    :account.refresh_token_cipher;
-  const expires=result.expires_in?futureIso(Number(result.expires_in)*1000):null;
-  await env.DB.prepare('UPDATE accounts SET access_token_cipher=?,refresh_token_cipher=?,token_expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?')
-    .bind(accessCipher,refreshCipher,expires,account.id,account.owner_id).run();
-  return result.access_token;
-}
-async function accountToken(env,account){
-  if(account.token_expires_at&&new Date(account.token_expires_at).getTime()<Date.now()+120000&&account.refresh_token_cipher){
-    return refreshXToken(env,account);
-  }
-  return open(env,account.access_token_cipher,`${account.owner_id}:${account.id}:access`);
+async function accountSession(env,account){
+  if(!account?.session_cipher)throw Object.assign(new Error('x_session_missing'),{status:401});
+  return open(env,account.session_cipher,`${account.owner_id}:${account.id}:session`);
 }
 function publicAccount(a){
   if(!a)return null;
   const copy={...a};
-  delete copy.access_token_cipher;delete copy.refresh_token_cipher;delete copy.owner_id;
-  copy.session_status='api_connected';
+  delete copy.session_cipher;delete copy.owner_id;
+  copy.session_status='connected';
   return copy;
+}
+async function resolveXSession(body){
+  const cookies=String(body.cookies||'').trim();
+  if(cookies){
+    const who=await xactions.verify(cookies);
+    return {who,cookies};
+  }
+  const username=String(body.username||'').replace(/^@/,'').trim();
+  const password=String(body.password||'');
+  const email=String(body.email||'').trim();
+  if(!username||!password)throw Object.assign(new Error('x_login_required'),{status:400});
+  const result=await xactions.login(username,password,email);
+  return {who:result.who,cookies:result.cookies};
+}
+async function connectXSession(request,env){
+  const current=await sessionUser(request,env);
+  const body=await readJson(request,32768);
+  let resolved;
+  try{resolved=await resolveXSession(body)}
+  catch(error){
+    const message=String(error?.message||error);
+    if(/two-factor|2FA|captcha|verification|LoginAcid/i.test(message)){
+      throw Object.assign(new Error('cookie_login_required'),{status:400});
+    }
+    throw Object.assign(new Error('x_login_failed'),{status:Number(error?.status)||400});
+  }
+  const who=resolved.who;
+  if(!who?.id||!who?.username)throw Object.assign(new Error('x_identity_missing'),{status:400});
+
+  let ownerId=current?.id||null;
+  let setCookie=null;
+  if(!ownerId){
+    const existing=await env.DB.prepare('SELECT id FROM users WHERE login_x_user_id=?').bind(String(who.id)).first();
+    ownerId=existing?.id||uid();
+    if(existing){
+      await env.DB.prepare('UPDATE users SET login_username=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(who.username,ownerId).run();
+    }else{
+      await env.DB.prepare('INSERT INTO users(id,login_x_user_id,login_username) VALUES(?,?,?)').bind(ownerId,String(who.id),who.username).run();
+    }
+    const token=await makeSession(env,ownerId);
+    setCookie=sessionCookie(token);
+  }
+
+  let account;
+  if(body.account_id){
+    account=await ownedAccount(env,ownerId,String(body.account_id));
+    if(String(account.x_user_id)!==String(who.id))throw Object.assign(new Error('x_account_mismatch'),{status:400});
+  }else{
+    account=await env.DB.prepare('SELECT * FROM accounts WHERE owner_id=? AND x_user_id=?').bind(ownerId,String(who.id)).first();
+  }
+  const accountId=account?.id||uid();
+  const cipher=await seal(env,resolved.cookies,`${ownerId}:${accountId}:session`);
+  const character=account?.character_name||who.name||who.username;
+  const bio=account?.bio||`架空のAIキャラクター｜${character}`;
+  if(account){
+    await env.DB.prepare(`UPDATE accounts SET username=?,display_name=?,session_cipher=?,session_status='connected',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
+      .bind(who.username,who.name||who.username,cipher,accountId,ownerId).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO accounts(
+      id,owner_id,x_user_id,username,display_name,character_name,bio,session_cipher,session_status
+    ) VALUES(?,?,?,?,?,?,?,?, 'connected')`)
+      .bind(accountId,ownerId,String(who.id),who.username,who.name||who.username,character,bio,cipher).run();
+  }
+  await audit(env,ownerId,current?'account_connect':'login',accountId);
+  return json({ok:true,username:who.username,account_id:accountId},200,setCookie?{'set-cookie':setCookie}:{});
 }
 function imageInfo(dataUrl){
   const m=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl||''));
@@ -203,71 +213,6 @@ async function consumeQuota(env,ownerId,kind){
   return {used:Number(result.n),limit};
 }
 
-async function startOAuth(request,env){
-  const url=new URL(request.url),mode=url.searchParams.get('mode')==='connect'?'connect':'login';
-  let user=null;if(mode==='connect')user=await requireUser(request,env);
-  const state=randomToken(32),verifier=randomToken(48),challenge=await sha256(verifier),browserNonce=randomToken(32);
-  const stateHash=await sha256(state),browserNonceHash=await sha256(browserNonce);
-  const verifierCipher=await seal(env,verifier,`oauth:${stateHash}`);
-  await env.DB.prepare('INSERT INTO oauth_flows(state_hash,user_id,mode,verifier_cipher,browser_nonce_hash,expires_at) VALUES(?,?,?,?,?,?)')
-    .bind(stateHash,user?.id||null,mode,verifierCipher,browserNonceHash,futureIso(10*60000)).run();
-  const auth=new URL('https://x.com/i/oauth2/authorize');
-  auth.searchParams.set('response_type','code');
-  auth.searchParams.set('client_id',env.X_CLIENT_ID);
-  auth.searchParams.set('redirect_uri',new URL('/auth/x/callback',env.PUBLIC_BASE_URL).toString());
-  auth.searchParams.set('scope','users.read tweet.read tweet.write media.write offline.access');
-  auth.searchParams.set('state',state);
-  auth.searchParams.set('code_challenge',challenge);
-  auth.searchParams.set('code_challenge_method','S256');
-  return new Response(null,{status:302,headers:{location:auth.toString(),'set-cookie':oauthCookie(browserNonce)}});
-}
-async function finishOAuth(request,env){
-  const url=new URL(request.url),state=url.searchParams.get('state')||'',code=url.searchParams.get('code')||'';
-  if(!state||!code)return problem(400,'X認証を完了できませんでした');
-  const stateHash=await sha256(state);
-  const flow=await env.DB.prepare('SELECT * FROM oauth_flows WHERE state_hash=? AND expires_at>CURRENT_TIMESTAMP').bind(stateHash).first();
-  if(!flow)return problem(400,'認証の有効期限が切れました');
-  const browserNonce=cookieValue(request,OAUTH_COOKIE);
-  if(!browserNonce||await sha256(browserNonce)!==flow.browser_nonce_hash)return problem(400,'認証を開始したブラウザと一致しません');
-  await env.DB.prepare('DELETE FROM oauth_flows WHERE state_hash=?').bind(stateHash).run();
-  const verifier=await open(env,flow.verifier_cipher,`oauth:${stateHash}`);
-  const tokens=await exchangeCode(env,code,verifier),who=await xMe(tokens.access_token);
-  let ownerId=flow.user_id;
-  let responseHeaders={};
-  if(flow.mode==='login'){
-    const existing=await env.DB.prepare('SELECT id FROM users WHERE login_x_user_id=?').bind(String(who.id)).first();
-    ownerId=existing?.id||uid();
-    if(existing){
-      await env.DB.prepare('UPDATE users SET login_username=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(who.username,ownerId).run();
-    }else{
-      await env.DB.prepare('INSERT INTO users(id,login_x_user_id,login_username) VALUES(?,?,?)').bind(ownerId,String(who.id),who.username).run();
-    }
-    const session=await makeSession(env,ownerId);
-    responseHeaders['set-cookie']=sessionCookie(session);
-  }else if(!ownerId){
-    return problem(401,'ログインしてください');
-  }
-  let account=await env.DB.prepare('SELECT * FROM accounts WHERE owner_id=? AND x_user_id=?').bind(ownerId,String(who.id)).first();
-  const accountId=account?.id||uid();
-  const accessCipher=await seal(env,tokens.access_token,`${ownerId}:${accountId}:access`);
-  const refreshCipher=tokens.refresh_token?await seal(env,tokens.refresh_token,`${ownerId}:${accountId}:refresh`):account?.refresh_token_cipher||null;
-  const expires=tokens.expires_in?futureIso(Number(tokens.expires_in)*1000):null;
-  if(account){
-    await env.DB.prepare(`UPDATE accounts SET username=?,display_name=?,access_token_cipher=?,refresh_token_cipher=?,
-      token_expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
-      .bind(who.username,who.name||who.username,accessCipher,refreshCipher,expires,accountId,ownerId).run();
-  }else{
-    const character=who.name||who.username;
-    await env.DB.prepare(`INSERT INTO accounts(
-      id,owner_id,x_user_id,username,display_name,character_name,bio,access_token_cipher,refresh_token_cipher,token_expires_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?)`)
-      .bind(accountId,ownerId,String(who.id),who.username,character,character,`架空のAIキャラクター｜${character}`,accessCipher,refreshCipher,expires).run();
-  }
-  await audit(env,ownerId,flow.mode==='login'?'login':'account_connect',accountId);
-  const headers=new Headers({location:new URL('/',env.PUBLIC_BASE_URL).toString(),...responseHeaders});
-  headers.append('set-cookie',clearOAuthCookie());
-  return new Response(null,{status:302,headers});
-}
 async function stateResponse(env,user){
   const [accounts,refs,assets,drafts,jobs]=await Promise.all([
     env.DB.prepare('SELECT * FROM accounts WHERE owner_id=? ORDER BY created_at DESC').bind(user.id).all(),
@@ -284,7 +229,7 @@ async function stateResponse(env,user){
     drafts:drafts.results,
     jobs:jobs.results,
     configured:!!env.XAI_API_KEY,
-    auth_mode:'x_oauth'
+    auth_mode:'x_session'
   });
 }
 const accountFields=new Set(['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images']);
@@ -373,26 +318,15 @@ async function setDraftImageData(env,user,draft,data,name='投稿画像'){
 }
 async function fetchReferencePosts(env,user,ref,account,requestedLimit){
   const limit=Math.min(500,Math.max(20,Number(requestedLimit)||100));
-  const token=await accountToken(env,account);
-  const profileResult=await xApi(token,`/2/users/by/username/${encodeURIComponent(ref.username)}?user.fields=name,username`);
-  const profile=profileResult?.data;if(!profile?.id)throw new Error('reference user unavailable');
-  let pagination='',posts=[];
-  while(posts.length<limit){
-    const max=Math.min(100,Math.max(5,limit-posts.length));
-    const query=new URLSearchParams({max_results:String(max),'tweet.fields':'created_at,public_metrics,attachments'});
-    if(pagination)query.set('pagination_token',pagination);
-    const result=await xApi(token,`/2/users/${profile.id}/tweets?${query}`);
-    for(const p of result?.data||[])if(p?.id&&p?.text)posts.push(p);
-    pagination=result?.meta?.next_token||'';
-    if(!pagination||!(result?.data||[]).length)break;
-  }
-  const statements=posts.slice(0,limit).map(p=>env.DB.prepare(`INSERT INTO ref_posts(id,owner_id,ref_id,text,posted_at,metrics_json,media_json)
+  const cookies=await accountSession(env,account);
+  const {profile,posts}=await xactions.collect(cookies,ref.username,limit);
+  const statements=(posts||[]).slice(0,limit).filter(p=>p?.id&&p?.text).map(p=>env.DB.prepare(`INSERT INTO ref_posts(id,owner_id,ref_id,text,posted_at,metrics_json,media_json)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner_id,ref_id,id) DO UPDATE SET text=excluded.text,posted_at=excluded.posted_at,metrics_json=excluded.metrics_json,media_json=excluded.media_json`)
-    .bind(String(p.id),user.id,ref.id,String(p.text).slice(0,4000),p.created_at||null,JSON.stringify(p.public_metrics||{}),JSON.stringify(p.attachments?.media_keys||[])));
+    .bind(String(p.id),user.id,ref.id,String(p.text).slice(0,4000),p.createdAt||null,JSON.stringify(p.metrics||{}),JSON.stringify(p.media||[])));
   if(statements.length)await env.DB.batch(statements);
   await env.DB.prepare('UPDATE refs SET display_name=?,account_id=?,fetched_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?')
-    .bind(profile.name||profile.username||ref.username,account.id,ref.id,user.id).run();
-  return posts.length;
+    .bind(profile?.name||ref.username,account.id,ref.id,user.id).run();
+  return statements.length;
 }
 const analysisSchema={type:'object',properties:{
   tone:{type:'string'},topics:{type:'array',items:{type:'string'}},emoji_style:{type:'string'},
@@ -531,39 +465,43 @@ async function publishDraft(env,draft){
   const claimed=await env.DB.prepare(`UPDATE drafts SET status='publishing',attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND owner_id=? AND status='scheduled'`).bind(draft.id,draft.owner_id).run();
   if(!claimed.meta.changes)return;
+  let tempPath=null;
   try{
-    let token=await accountToken(env,account),mediaId=null;
+    const cookies=await accountSession(env,account);
+    await xactions.checkBio(cookies,account.username);
     if(draft.image_id){
       const asset=await env.DB.prepare('SELECT * FROM assets WHERE id=? AND owner_id=?').bind(draft.image_id,draft.owner_id).first();
-      if(!asset)throw new Error('image missing');
-      const object=await env.MEDIA.get(asset.r2_key);if(!object)throw new Error('image missing');
-      const bytes=new Uint8Array(await object.arrayBuffer());
-      const upload=await xApi(token,'/2/media/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({media:bytesToBase64(bytes),media_category:'tweet_image'})});
-      mediaId=upload?.data?.id;if(!mediaId)throw new Error('media upload failed');
+      if(!asset)throw Object.assign(new Error('image missing'),{deliveryStage:'upload'});
+      const object=await env.MEDIA.get(asset.r2_key);if(!object)throw Object.assign(new Error('image missing'),{deliveryStage:'upload'});
+      const ext=extFor(asset.mime);
+      tempPath=`/tmp/xnekama-${uid()}.${ext}`;
+      await writeFile(tempPath,new Uint8Array(await object.arrayBuffer()));
     }
-    const result=await xApi(token,'/2/tweets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
-      text:draft.text,...(mediaId?{media:{media_ids:[String(mediaId)]},made_with_ai:true}:{})
-    })});
-    if(!result?.data?.id)throw new Error('post id unavailable');
+    const postId=await xactions.publish(cookies,draft.text,tempPath,`架空AIキャラクター ${account.character_name} の生成画像`);
+    if(!postId)throw Object.assign(new Error('post id unavailable'),{deliveryStage:'submit'});
     await env.DB.prepare(`UPDATE drafts SET status='posted',x_post_id=?,posted_at=CURRENT_TIMESTAMP,next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
-      .bind(String(result.data.id),draft.id,draft.owner_id).run();
+      .bind(String(postId),draft.id,draft.owner_id).run();
     await audit(env,draft.owner_id,'draft_posted',draft.id);
   }catch(error){
     const attempt=Number(draft.attempt_count||0)+1;
-    const status=Number(error.status||0);
-    const ambiguous=!status||status>=500;
-    if(status===429&&attempt<3){
-      const next=futureIso(60000*Math.pow(2,attempt-1));
-      await env.DB.prepare(`UPDATE drafts SET status='scheduled',next_attempt_at=?,last_error_kind='rate_limit',error='再試行待ち',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
-        .bind(next,draft.id,draft.owner_id).run();
+    const status=Number(error?.status||error?.response?.status||0);
+    const stage=error?.deliveryStage||'preflight';
+    const rateLimited=status===429||/rate limit/i.test(String(error?.message||''));
+    const safeTransient=stage!=='submit'&&(!status||status>=500);
+    const ambiguous=stage==='submit'&&(!status||status>=500);
+    if((rateLimited||safeTransient)&&attempt<3){
+      const next=futureIso(rateLimited?60000*Math.pow(2,attempt-1):30000*Math.pow(2,attempt-1));
+      await env.DB.prepare(`UPDATE drafts SET status='scheduled',next_attempt_at=?,last_error_kind=?,error='再試行待ち',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
+        .bind(next,rateLimited?'rate_limit':'transient',draft.id,draft.owner_id).run();
     }else{
       await env.DB.prepare(`UPDATE drafts SET status='failed',next_attempt_at=NULL,last_error_kind=?,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
-        .bind(ambiguous?'ambiguous':'rejected',ambiguous?'送信結果を確認できません。X上の投稿有無を確認してください。':'X APIが投稿を拒否しました。',draft.id,draft.owner_id).run();
+        .bind(ambiguous?'ambiguous':'rejected',ambiguous?'送信結果を確認できません。X上の投稿有無を確認してください。':'Xへの投稿に失敗しました。',draft.id,draft.owner_id).run();
     }
+  }finally{
+    if(tempPath)await unlink(tempPath).catch(()=>{});
   }
 }
 async function cronTick(env){
-  await env.DB.prepare('DELETE FROM oauth_flows WHERE expires_at<=CURRENT_TIMESTAMP').run();
   await env.DB.prepare('DELETE FROM sessions WHERE expires_at<=CURRENT_TIMESTAMP').run();
   const due=await env.DB.prepare(`SELECT * FROM drafts WHERE status='scheduled' AND scheduled_at<=CURRENT_TIMESTAMP
     AND (next_attempt_at IS NULL OR next_attempt_at<=CURRENT_TIMESTAMP) ORDER BY scheduled_at LIMIT 25`).all();
@@ -642,8 +580,9 @@ async function queueMessage(env,message){
 async function handleApi(request,env){
   const url=new URL(request.url),path=url.pathname,method=request.method;
   if((path==='/api/me'||path==='/api/auth')&&method==='GET'){
-    const user=await sessionUser(request,env);return json({authenticated:!!user,mode:'x_oauth',user:user?{username:user.login_username}:null});
+    const user=await sessionUser(request,env);return json({authenticated:!!user,mode:'x_session',user:user?{username:user.login_username}:null});
   }
+  if(path==='/api/x-session'&&method==='POST')return connectXSession(request,env);
   if(path==='/api/logout'&&method==='POST'){
     await deleteSession(request,env);return json({ok:true},200,{'set-cookie':clearSessionCookie()});
   }
@@ -651,7 +590,6 @@ async function handleApi(request,env){
     const user=await requireUser(request,env);
     const assets=await env.DB.prepare('SELECT r2_key FROM assets WHERE owner_id=?').bind(user.id).all();
     for(const asset of assets.results)await env.MEDIA.delete(asset.r2_key);
-    await env.DB.prepare('DELETE FROM oauth_flows WHERE user_id=?').bind(user.id).run();
     await env.DB.prepare('DELETE FROM audit_events WHERE owner_id=?').bind(user.id).run();
     await env.DB.prepare('DELETE FROM users WHERE id=?').bind(user.id).run();
     return json({ok:true},200,{'set-cookie':clearSessionCookie()});
@@ -780,8 +718,6 @@ export default {
   async fetch(request,env){
     try{
       const url=new URL(request.url);
-      if(url.pathname==='/auth/x/start'&&request.method==='GET')return startOAuth(request,env);
-      if(url.pathname==='/auth/x/callback'&&request.method==='GET')return finishOAuth(request,env);
       if(url.pathname.startsWith('/api/')){
         if(!originAllowed(request,env))return problem(403,'送信元を確認してください');
         return await handleApi(request,env);
@@ -792,7 +728,7 @@ export default {
       headers.set('referrer-policy','no-referrer');
       headers.set('x-frame-options','DENY');
       headers.set('permissions-policy','camera=(), microphone=(), geolocation=()');
-      headers.set('content-security-policy',"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://x.com");
+      headers.set('content-security-policy',"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
       return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
     }catch(error){
       const status=Number(error?.status||0);
@@ -801,7 +737,12 @@ export default {
       if(status===404)return problem(404,'見つかりません');
       if(status===413)return problem(413,'データが大きすぎます');
       if(status===409)return problem(409,'現在の状態では実行できません');
-      if(status===400)return problem(400,'入力内容を確認してください');
+      if(status===400){
+        if(error?.message==='cookie_login_required')return problem(400,'このXアカウントは追加認証が必要です。ログイン済みCookieで接続してください');
+        if(error?.message==='x_account_mismatch')return problem(400,'選択したアカウントとXセッションが一致しません');
+        if(error?.message==='x_login_failed')return problem(400,'Xへのログインに失敗しました。Cookie接続も試してください');
+        return problem(400,'入力内容を確認してください');
+      }
       return problem(500,'処理に失敗しました');
     }
   },
