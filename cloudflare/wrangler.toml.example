@@ -45,3 +45,6 @@ XAI_IMAGE_MODEL = "grok-imagine-image-2.0"
 #   npx wrangler secret put XAI_API_KEY
 #   npx wrangler secret put TOKEN_ENCRYPTION_KEY
 #   npx wrangler secret put X_CLIENT_SECRET
+
+TEXT_GENERATION_DAILY_LIMIT = "20"
+IMAGE_GENERATION_DAILY_LIMIT = "10"
