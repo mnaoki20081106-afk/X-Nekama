@@ -34,11 +34,11 @@ function sessionCookie(token,maxAge=SESSION_DAYS*86400){
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 function clearSessionCookie(){return `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`}
-function originAllowed(request,env){
+function originAllowed(request){
   if(['GET','HEAD','OPTIONS'].includes(request.method))return true;
   const origin=request.headers.get('origin');
   if(!origin)return false;
-  try{return new URL(origin).origin===new URL(env.PUBLIC_BASE_URL).origin}catch{return false}
+  try{return new URL(origin).origin===new URL(request.url).origin}catch{return false}
 }
 async function readJson(request,limit=6*1024*1024){
   const length=Number(request.headers.get('content-length')||0);
@@ -47,10 +47,33 @@ async function readJson(request,limit=6*1024*1024){
   if(text.length>limit)throw Object.assign(new Error('payload_too_large'),{status:413});
   try{return text?JSON.parse(text):{}}catch{throw Object.assign(new Error('bad_json'),{status:400})}
 }
+const MASTER_KEY_OBJECT='__xnekama_internal__/master-key-v1';
+let masterKeyPromise=null;
+async function masterKeyBytes(env){
+  if(masterKeyPromise)return masterKeyPromise;
+  masterKeyPromise=(async()=>{
+    const existing=await env.MEDIA.get(MASTER_KEY_OBJECT);
+    if(existing){
+      const bytes=new Uint8Array(await existing.arrayBuffer());
+      if(bytes.length!==32)throw new Error('invalid internal master key');
+      return bytes;
+    }
+    const candidate=new Uint8Array(32);crypto.getRandomValues(candidate);
+    const created=await env.MEDIA.put(MASTER_KEY_OBJECT,candidate,{
+      onlyIf:{etagDoesNotMatch:'*'},
+      customMetadata:{purpose:'x-nekama-master-key-v1'}
+    });
+    if(created)return candidate;
+    const raced=await env.MEDIA.get(MASTER_KEY_OBJECT);
+    if(!raced)throw new Error('master key creation race failed');
+    const bytes=new Uint8Array(await raced.arrayBuffer());
+    if(bytes.length!==32)throw new Error('invalid internal master key');
+    return bytes;
+  })();
+  try{return await masterKeyPromise}catch(error){masterKeyPromise=null;throw error}
+}
 async function encryptionKey(env){
-  const raw=fromBase64(env.TOKEN_ENCRYPTION_KEY||'');
-  if(raw.length!==32)throw new Error('TOKEN_ENCRYPTION_KEY must decode to 32 bytes');
-  return crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt','decrypt']);
+  return crypto.subtle.importKey('raw',await masterKeyBytes(env),'AES-GCM',false,['encrypt','decrypt']);
 }
 async function seal(env,value,aad){
   const iv=new Uint8Array(12);crypto.getRandomValues(iv);
@@ -643,7 +666,7 @@ export default {
     try{
       const url=new URL(request.url);
       if(url.pathname.startsWith('/api/')){
-        if(!originAllowed(request,env))return problem(403,'送信元を確認してください');
+        if(!originAllowed(request))return problem(403,'送信元を確認してください');
         return await handleApi(request,env);
       }
       const response=await env.STATIC.fetch(request);
