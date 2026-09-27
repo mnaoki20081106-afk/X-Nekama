@@ -41,7 +41,7 @@ Cloudflare側が担当するのは次だけです。
 
 - X-Nekama session: 256-bit random token
 - D1へはsession tokenのSHA-256 hashだけ保存
-- X Web session Cookie: TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号化
+- X Web session Cookie: Workerがprivate R2内部に自動生成する32-byte master keyでAES-256-GCM暗号化
 - 全データ: owner_idで分離
 - R2: public access無効
 - R2 key: owner_id/random-id.ext
@@ -66,16 +66,16 @@ npx wrangler queues create x-nekama-dlq
 
 `wrangler.toml.example` を `wrangler.toml` にコピーし、D1のdatabase_idとPUBLIC_BASE_URLだけ設定します。
 
-## Required secret
+## 暗号鍵
 
-### TOKEN_ENCRYPTION_KEY
+手動Secretは不要です。
 
-```sh
-openssl rand -base64 32
-npx wrangler secret put TOKEN_ENCRYPTION_KEY
-```
+Workerが初回利用時に32-byteのランダムmaster keyを生成し、private R2内部オブジェクトへ保存します。
 
-X WebセッションCookieの暗号化だけに使います。
+- D1: 暗号化済みX session
+- R2 internal object: master key
+- public APIからmaster keyは取得不可
+- R2 public accessは無効
 
 ## Deploy
 
