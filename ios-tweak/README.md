@@ -1,73 +1,112 @@
 # X-Nekama iOS tweak layer
 
-X公式iOSアプリへX-NekamaのUIを追加するためのTheos tweakです。
+X公式iOSアプリの投稿ComposerへX-Nekamaの入口を追加するTheos tweakです。
 
-## 検証したIPA
+## 検証対象
 
-2026-09-27に提供されたIPAを解析した結果:
+2026-09-27に提供された復号済みIPAを実バイナリから解析しています。
 
 - App: X
 - Version: 12.29 (build 20)
 - Bundle ID: `com.atebits.Tweetie2`
 - Minimum iOS: 15.0
 - Main binary: arm64
-- Main binary and inspected major frameworks: `LC_ENCRYPTION_INFO_64 cryptid 0` (decrypted)
+- Main binary: `LC_ENCRYPTION_INFO_64 cryptid 0`
 
-X 12.29内で確認できたGrok関連要素:
+### X 12.29で実在確認できた接続点
+
+`XAppLibraries.framework` / `XServiceLibraries.framework` のMach-Oシンボル・文字列から次を確認済みです。
+
+- `T1ComposerThreadViewController`
+- `Grok.GrokImagineComposerButton` / `_TtC4Grok25GrokImagineComposerButton`
+- `Grok.GrokImagineComposerToolbarButton` / `_TtC4Grok32GrokImagineComposerToolbarButton`
+- `Grok.GrokImagineComposePromptInput`
+- `Grok.GrokImaginePresentationManager`
+- `Grok.GrokImagineImageGenSession`
+- `Grok.GrokImagineSessionManager`
+- `grokImagineComposePromptInputDidSubmit:`
+- `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:`
+- `grok_composer_imagine_is_enabled`
+- `grok_imagine_composer_enabled`
+- `grokPostComposerEnabled`
+- `GROK_POST_COMPOSER_ENHANCE_USER_POST`
+- `https://www.x.com/i/grok?text=`
+- `twitter://grok`
+- `xai-grok://imagine`
+
+以前の試作にあった以下の名前は、提供IPAから存在確認できなかったため現在の実装では使用しません。
 
 - `T1GrokTextPostComposerController`
 - `T1GrokImagePostComposerContainer`
 - `GrokAPIClient`
-- `GrokImagineSessionManager`
-- `GrokImagineComposerButton`
-- `twitter://grok`
+- `T1TweetComposeViewController`
+- `TFNTwitterComposition`
 - `twitter://imagine`
-- `https://www.x.com/i/grok?text=`
+- `_t1_openGrokImagineViewControllerWithInitialPrompt:`
 
 ## 現在の実装
 
-投稿Compose画面を、クラス名と `T1ComposeRichTextView` の存在から実行時に検出し、右下にNekamaボタンを表示します。
+private Frameworkへ静的リンクせず、Objective-C runtimeでComposerを検出します。
 
-ボタンから:
+Composer判定は:
 
-1. 現在の下書き + NekamaプロファイルをGrok用プロンプトに変換してGrokを開く
-2. X内のGrok Imagineを開く
-3. 年齢・所在地・性格・口調の簡易プロファイルを保存
-4. 顔写真・スマホケース画像をアカウント別に保存
-5. 登録画像をXネイティブのGrok Imagine Lightboxの `sourceImages` 経路へ渡して画像編集を開始
+- `ComposerThreadViewController` / `TweetCompose` 系クラス名
+- `TweetComposeSingleTweetViewControllerProtocol` への適合
 
-内部private APIを直接呼び出す前に、まずこの薄い統合層でX 12.29上の注入・UI表示・Grok遷移を確認する設計です。
+を実行時に確認します。
+
+Composer画面には右下に `✦` Nekamaボタンを追加します。
+
+### Grokで投稿文を作る
+
+X 12.29自身に含まれる `https://www.x.com/i/grok?text=` ルートへプロンプトを渡します。存在確認できていないprivate initializerは呼びません。
+
+### Grokで画像を作る
+
+現在のComposerのView hierarchyから、X自身の
+
+- `GrokImagineComposerButton`
+- `GrokImagineComposerToolbarButton`
+
+を検索します。実際に表示されているネイティブボタンが見つかった場合だけ `UIControlEventTouchUpInside` を送って起動します。
+
+ボタンがFeature Flagなどで存在しない場合は、Grokルーターへ画像生成指示を渡すフォールバックに切り替えます。
+
+### ランタイム診断
+
+Nekamaメニューの「ランタイム診断」で以下を表示できます。
+
+- Xのバージョン/build
+- 実際にフックされたComposer class
+- Grok Imagine関連classの存在
+- 現在Composer上にあるネイティブImagine button
+- `grokImagineComposePromptInputDidSubmit:` 実装class
+- `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` 実装class
+
+X更新時はこの診断結果を基準に追従します。
 
 ## Build
 
-Theosとcyanを用意し、復号済みIPAを次の名前で置きます。
-
-```
-ios-tweak/packages/com.atebits.Tweetie2.ipa
-```
-
-Then:
+Theosを用意して:
 
 ```sh
-chmod +x build.sh
-./build.sh --sideloaded
+cd ios-tweak
+make clean
+make package
 ```
 
-出力:
+GitHub Actionsの `iOS Tweak Build` でも `.deb` を生成します。
 
-```
-packages/X-Nekama-sideloaded.ipa
-```
-
-インストール時の署名はSideStore / AltStore等の通常のサイドロード環境で行ってください。
+IPAへ注入する場合は、利用者が用意した復号済みIPAへ `XNekama.dylib` を組み込み、利用者自身の署名環境で再署名します。X公式IPA本体はこのリポジトリには保存しません。
 
 ## 次の段階
 
-- Xの現在アカウントとX-Nekamaプロファイルの1:1紐付け
-- 顔写真・スマホケース以外の複数カテゴリ参考画像ライブラリ
-- Grokの文章生成結果はCompose本文へ戻すブリッジを実装済み
-- Grok Imagine生成画像はX本体の `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` → `addOrReplaceAttachment:animated:` 経路でComposeへ戻ることをX 12.29バイナリで確認済み
-- 登録済み顔/スマホケース画像はGrok Imagine LightboxへsourceImagesとして渡すブリッジを実装済み
-- 既存のX-Nekama投稿キューとの連携
+1. 実機でNekamaボタンとX内蔵Imagine起動を確認
+2. ランタイム診断からX 12.29の実Composer classを確定
+3. X内蔵 `GROK_POST_COMPOSER_ENHANCE_USER_POST` の実UI入口を特定
+4. Grok文章生成結果を同じComposerへ戻す経路を実バイナリ/実機イベントから特定
+5. `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` を観測し、画像生成完了をNekama Coreへ同期
+6. アカウント別Persona・顔・スマホケース・お手本画像をNekama Coreと接続
+7. 投稿キューとComposerを接続
 
-Xの内部クラス・feature switchへ直接依存する箇所は、バージョン更新で壊れやすいため、X 12.29の実体確認を行ってから段階的に追加します。
+存在確認できていないprivate API名を推測で追加しない方針です。
