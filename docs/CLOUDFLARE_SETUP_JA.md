@@ -89,7 +89,7 @@ Wranglerは対応環境ではOSキーチェーンを使う安全なログイン�
   https://x-nekama-xxxx.example.workers.dev
 ```
 
-このURLをX-Nekamaアプリの **完全自動予約 > Cloudflare URL** に入力します。
+このURLを改造Xの **✦ Nekama → Core URLを設定** に入力します。以後は **✦ Nekama → X-Nekama Coreを開く** から自分のCloudflare環境へ入れます。
 
 ---
 
