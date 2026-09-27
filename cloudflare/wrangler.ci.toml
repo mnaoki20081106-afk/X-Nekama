@@ -1,0 +1,40 @@
+name = "x-nekama-public-ci"
+main = "src/index.mjs"
+compatibility_date = "2026-09-27"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "../public"
+binding = "STATIC"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "x-nekama-public-ci"
+database_id = "00000000000000000000000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "x-nekama-media-ci"
+
+[[queues.producers]]
+binding = "TASKS"
+queue = "x-nekama-tasks-ci"
+
+[[queues.consumers]]
+queue = "x-nekama-tasks-ci"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+retry_delay = 60
+dead_letter_queue = "x-nekama-dlq-ci"
+max_concurrency = 1
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+PUBLIC_BASE_URL = "https://example.com"
+X_CLIENT_ID = "ci-client-id"
+XAI_TEXT_MODEL = "grok-4.7"
+XAI_IMAGE_MODEL = "grok-imagine-image-2.0"
