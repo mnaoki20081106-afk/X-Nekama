@@ -116,3 +116,35 @@ test('generateWeek uses Responses API with server-side storage disabled',async()
   assert.equal(posts[0].scheduled_at,'2026-09-28T18:30:00+09:00');
  }finally{globalThis.fetch=original}
 });
+
+
+test('generateWeek spaces candidate dates by activity interval',async()=>{
+ const original=globalThis.fetch;
+ process.env.XAI_API_KEY='test-key';
+ globalThis.fetch=async(_url,options)=>{
+  const request=JSON.parse(options.body);
+  const userInput=request.input.find(x=>x.role==='user')?.content||'';
+  assert.match(userInput,/浮上頻度は3日に1回/);
+  assert.match(userInput,/2026-09-28, 2026-10-01, 2026-10-04/);
+  return new Response(JSON.stringify({
+   output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({posts:[
+    {text:'1件目',date:'2026-09-28',time:'18:00',image_style:null},
+    {text:'2件目',date:'2026-10-01',time:'18:00',image_style:null},
+    {text:'3件目',date:'2026-10-04',time:'18:00',image_style:null}
+   ]})}]}]
+  }),{status:200,headers:{'content-type':'application/json'}});
+ };
+ try{
+  const posts=await generateWeek(
+   {character_name:'ルナ',activity_interval_days:3,active_hours:'10:00-22:00'},
+   [],[],
+   '2026-09-27T00:00:00.000Z',
+   3
+  );
+  assert.deepEqual(posts.map(p=>p.scheduled_at),[
+   '2026-09-28T18:00:00+09:00',
+   '2026-10-01T18:00:00+09:00',
+   '2026-10-04T18:00:00+09:00'
+  ]);
+ }finally{globalThis.fetch=original}
+});
