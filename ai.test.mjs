@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {imagePrompt,generateImage,generateWeek} from './ai.mjs';
 
-const jpeg=Buffer.from([0xff,0xd8,0xff,0xd9]).toString('base64');
+const jpegBuffer=Buffer.from([0xff,0xd8,0xff,0xd9]);
 
 test('imagePrompt keeps fictional-character and style context',()=>{
  const prompt=imagePrompt(
@@ -20,14 +20,20 @@ test('generateImage uses generation endpoint without references',async()=>{
  process.env.XAI_API_KEY='test-key';
  let seen;
  globalThis.fetch=async(url,options)=>{
-  seen={url:String(url),body:JSON.parse(options.body)};
-  return new Response(JSON.stringify({data:[{b64_json:jpeg}]}),{status:200,headers:{'content-type':'application/json'}});
+  if(String(url)==='https://api.x.ai/v1/images/generations'){
+   seen={url:String(url),body:JSON.parse(options.body)};
+   return new Response(JSON.stringify({data:[{url:'https://images.example/generated.jpg'}]}),{status:200,headers:{'content-type':'application/json'}});
+  }
+  if(String(url)==='https://images.example/generated.jpg'){
+   return new Response(jpegBuffer,{status:200,headers:{'content-type':'image/jpeg'}});
+  }
+  throw new Error('unexpected URL '+url);
  };
  try{
   const result=await generateImage('test prompt',[]);
   assert.equal(seen.url,'https://api.x.ai/v1/images/generations');
   assert.equal(seen.body.model,process.env.XAI_IMAGE_MODEL||'grok-imagine-image-2.0');
-  assert.equal(seen.body.response_format,'b64_json');
+  assert.equal(seen.body.response_format,'url');
   assert.equal(result.mime,'image/jpeg');
   assert.ok(result.data.length);
  }finally{globalThis.fetch=original}
@@ -37,12 +43,16 @@ test('generateImage uses singular image for one reference',async()=>{
  const original=globalThis.fetch;
  process.env.XAI_API_KEY='test-key';
  let body;
- globalThis.fetch=async(_url,options)=>{
-  body=JSON.parse(options.body);
-  return new Response(JSON.stringify({data:[{b64_json:jpeg}]}),{status:200,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(url,options)=>{
+  if(String(url)==='https://api.x.ai/v1/images/edits'){
+   body=JSON.parse(options.body);
+   return new Response(JSON.stringify({data:[{url:'https://images.example/edited.jpg'}]}),{status:200,headers:{'content-type':'application/json'}});
+  }
+  if(String(url)==='https://images.example/edited.jpg')return new Response(jpegBuffer,{status:200});
+  throw new Error('unexpected URL '+url);
  };
  try{
-  await generateImage('test prompt',[{mime:'image/jpeg',data:Buffer.from([0xff,0xd8,0xff,0xd9])}]);
+  await generateImage('test prompt',[{mime:'image/jpeg',data:jpegBuffer}]);
   assert.ok(body.image);
   assert.equal(body.images,undefined);
   assert.match(body.image.url,/^data:image\/jpeg;base64,/);
@@ -53,9 +63,13 @@ test('generateImage uses images array for multiple references',async()=>{
  const original=globalThis.fetch;
  process.env.XAI_API_KEY='test-key';
  let body;
- globalThis.fetch=async(_url,options)=>{
-  body=JSON.parse(options.body);
-  return new Response(JSON.stringify({data:[{b64_json:jpeg}]}),{status:200,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(url,options)=>{
+  if(String(url)==='https://api.x.ai/v1/images/edits'){
+   body=JSON.parse(options.body);
+   return new Response(JSON.stringify({data:[{url:'https://images.example/edited.jpg'}]}),{status:200,headers:{'content-type':'application/json'}});
+  }
+  if(String(url)==='https://images.example/edited.jpg')return new Response(jpegBuffer,{status:200});
+  throw new Error('unexpected URL '+url);
  };
  try{
   const ref={mime:'image/png',data:Buffer.from([0x89,0x50,0x4e,0x47])};
@@ -65,20 +79,28 @@ test('generateImage uses images array for multiple references',async()=>{
  }finally{globalThis.fetch=original}
 });
 
-test('generateWeek accepts Grok structured JSON output',async()=>{
+test('generateWeek uses Responses API with server-side storage disabled',async()=>{
  const original=globalThis.fetch;
  process.env.XAI_API_KEY='test-key';
- globalThis.fetch=async(_url,options)=>{
+ globalThis.fetch=async(url,options)=>{
+  assert.equal(String(url),'https://api.x.ai/v1/responses');
   const request=JSON.parse(options.body);
   assert.equal(request.model,process.env.XAI_TEXT_MODEL||'grok-4.7');
-  assert.equal(request.response_format.type,'json_schema');
+  assert.equal(request.store,false);
+  assert.equal(request.text.format.type,'json_schema');
   return new Response(JSON.stringify({
-   choices:[{message:{content:JSON.stringify({posts:[{
-    text:'今日はのんびり。',
-    date:'2026-09-28',
-    time:'18:30',
-    image_style:'selfie'
-   }]})}}]
+   output:[{
+    type:'message',
+    content:[{
+     type:'output_text',
+     text:JSON.stringify({posts:[{
+      text:'今日はのんびり。',
+      date:'2026-09-28',
+      time:'18:30',
+      image_style:'selfie'
+     }]})
+    }]
+   }]
   }),{status:200,headers:{'content-type':'application/json'}});
  };
  try{
