@@ -86,7 +86,7 @@ XのWeb実装が変わった場合はXActions側の追従が必要です。
 Node.js 24以上。
 
 ```sh
-cp .env.example .env
+cp .env.node.example .env
 npm start
 ```
 
@@ -138,3 +138,20 @@ Xパスワードは接続処理時だけ使い、保存しません。
 - 認証/保存/AI表記
 - 投稿キューの再試行/曖昧送信処理
 - 本文フィンガープリント
+
+
+## Deploy to Cloudflare ボタン
+
+一般公開時はCloudflare公式の **Deploy to Cloudflare** ボタンを第一導線にします。
+
+このリポジトリには既にDeploy Button用の `wrangler.toml` と `npm run deploy` を用意してあります。Cloudflare側がD1 / R2 / Queuesを自動プロビジョニングし、D1 migrationもdeploy scriptから適用します。
+
+公開用クリーンrepositoryを作成した後、READMEへ次の形式のボタンを追加します。
+
+```md
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/X-Nekama)
+```
+
+現在の開発repositoryは過去commit metadataに個人メールが含まれるため、**配布用ボタンはクリーンrepo作成後に有効化**します。
+
+ボタン方式で問題が起きた場合は `docs/CLOUDFLARE_SETUP_JA.md` の完全自動セットアップスクリプトを使用できます。
