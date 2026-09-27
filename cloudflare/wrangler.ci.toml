@@ -36,8 +36,4 @@ crons = ["* * * * *"]
 
 [vars]
 PUBLIC_BASE_URL = "https://example.com"
-XAI_TEXT_MODEL = "grok-4.7"
-XAI_IMAGE_MODEL = "grok-imagine-image-2.0"
 
-TEXT_GENERATION_DAILY_LIMIT = "20"
-IMAGE_GENERATION_DAILY_LIMIT = "10"
