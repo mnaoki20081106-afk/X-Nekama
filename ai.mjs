@@ -100,7 +100,7 @@ export async function generateWeek(account,refs,history,start,count=7){
  const prompt=`あなたは、プロフィール上でAIキャラクターであることを明示して運用するXアカウントの編集者です。
 日本語の自然な投稿案を作ってください。本人が現実に体験した事実だと誤認させる断定は避け、参考アカウントの投稿をコピーしないでください。
 各投稿は240文字以内。image_style は 'purikura','bereal','selfie','mirror','candid' または null。
-設定: ${JSON.stringify({name:account.character_name,age:account.age,location:account.location,tone:account.tone,personality:account.personality,hobbies:account.hobbies,bio:account.bio,emoji:account.emoji_style,avoid:account.ng_topics,frequency:count,hours:account.active_hours})}
+設定: ${JSON.stringify({name:account.character_name,age:account.age,gender:account.gender,occupation:account.occupation,location:account.location,tone:account.tone,first_person:account.first_person,personality:account.personality,hobbies:account.hobbies,bio:account.bio,emoji:account.emoji_style,avoid:account.ng_topics,frequency:count,hours:account.active_hours})}
 参考分析: ${JSON.stringify(reference)}
 最近の投稿: ${JSON.stringify(history.map(h=>h.text).slice(0,25))}
 利用可能な日付: ${dates.join(', ')}
