@@ -22,13 +22,12 @@ X-Nekamaを一般公開する前の必須チェックです。
 
 - XAI_API_KEY
 - TOKEN_ENCRYPTION_KEY
-- X_CLIENT_SECRET
 - Cloudflare API token
-- X access token / refresh token
+- X Web session cookie
 
-Cloudflare Worker runtimeでは、最初の3つだけを **Workers Secrets** として設定します。
+Cloudflare Worker runtimeでは、`XAI_API_KEY` と `TOKEN_ENCRYPTION_KEY` だけを **Workers Secrets** として設定します。
 
-X user tokensはWorkerが受け取り、TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号化したciphertextだけをD1へ保存します。
+X Web session CookieはWorkerが受け取り、TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号化したciphertextだけをD1へ保存します。
 
 ## 3. Tenant isolation
 
@@ -40,7 +39,7 @@ X user tokensはWorkerが受け取り、TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号
 - User AがUser Bのdraft IDを指定しても404/拒否
 - User AがUser Bのasset IDを指定しても画像を取得できない
 - ref / ref_postも同様
-- API responseにowner_id / encrypted token / R2 keyが含まれない
+- API responseにowner_id / encrypted Cookie / R2 keyが含まれない
 
 ## 4. R2
 
@@ -52,24 +51,15 @@ R2 bucketはprivateのまま使います。
 - keyは `owner_id/random-id.ext`
 - WorkerはD1で所有権確認してからR2を読む
 
-## 5. OAuth
+## 5. X session connection
 
-X OAuth 2.0 Authorization Code + PKCEを使用します。
+X Developer / OAuth 2.0は使用しません。
 
-Callback:
-
-```
-https://YOUR_DOMAIN/auth/x/callback
-```
-
-scope:
-
-```
-users.read tweet.read tweet.write media.write offline.access
-```
-
-OAuth flowはstateに加えて、開始ブラウザ専用のHttpOnly nonce cookieへ結び付けています。
-別ブラウザで開始したOAuthを別ユーザーworkspaceへ紐付ける操作は拒否します。
+- XActionsでユーザー自身のX Webセッションを検証
+- パスワードは保存しない
+- CookieだけAES-256-GCM暗号化してD1へ保存
+- 追加認証が必要な場合はログイン済みCookie接続へ切り替える
+- 接続CookieはAPI responseやログへ出さない
 
 ## 6. Data deletion
 
@@ -79,7 +69,7 @@ OAuth flowはstateに加えて、開始ブラウザ専用のHttpOnly nonce cooki
 
 - users
 - sessions
-- connected X accounts / encrypted OAuth tokens
+- connected X accounts / encrypted Cookie
 - drafts
 - refs / ref_posts
 - jobs
@@ -106,14 +96,14 @@ UIを書き換えてもWorker側のD1 counterで拒否します。
 
 本番では以下をconsoleへ出しません。
 
-- OAuth code / state
-- X access token / refresh token
+- X Web session Cookie
+- Xパスワード
 - XAI_API_KEY
 - 投稿本文
 - 画像base64
 - user email
 
-Cloudflare Observabilityを有効化する場合は、request URL query stringを含むログの保持設定を確認してください。
+Cloudflare Observabilityを有効化する場合は、request bodyを記録しない設定を確認してください。
 
 ## 9. Release gate
 
@@ -124,7 +114,8 @@ Cloudflare Observabilityを有効化する場合は、request URL query string�
 - `wrangler deploy --dry-run`: green
 - production D1 migration成功
 - R2 public access disabled
-- X OAuth callback exact match
 - 2-user tenant isolation E2E成功
 - self-delete E2E成功
+- XActionsによるtext-only実投稿E2E成功
+- XActionsによる画像付き実投稿E2E成功
 - public release repositoryにpersonal emailを含む過去履歴がない
