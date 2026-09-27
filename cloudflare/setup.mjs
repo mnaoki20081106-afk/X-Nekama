@@ -176,6 +176,23 @@ function workerUrl(output){
  const urls=output.match(/https:\/\/[A-Za-z0-9._-]+\.workers\.dev\/?/g)||[];
  return urls.at(-1)?.replace(/\/$/,'')||null;
 }
+async function copyText(text){
+ const commands=process.platform==='darwin'
+  ? [['pbcopy',[]]]
+  : process.platform==='win32'
+    ? [['clip',[]]]
+    : [['wl-copy',[]],['xclip',['-selection','clipboard']]];
+ for(const [command,args] of commands){
+  const ok=await new Promise(resolve=>{
+   const child=spawn(command,args,{stdio:['pipe','ignore','ignore'],shell:false});
+   child.on('error',()=>resolve(false));
+   child.on('close',code=>resolve(code===0));
+   child.stdin.end(text);
+  });
+  if(ok)return true;
+ }
+ return false;
+}
 async function health(url){
  const response=await fetch(url+'/api/auth',{headers:{accept:'application/json'}});
  if(!response.ok)throw new Error(`公開URLの疎通確認に失敗しました: HTTP ${response.status}`);
@@ -235,12 +252,14 @@ async function main(){
  await deployWithSecret(key);
 
  await health(url);
+ const copied=await copyText(url);
  note('セットアップ完了');
  process.stdout.write(`
 公開URL:
   ${url}
+${copied?'\nURLをクリップボードへコピーしました。':''}
 
-このURLをX-Nekamaの「完全自動予約」設定へ入力してください。
+このURLを改造Xの「✦ Nekama → Core URLを設定」へ入力してください。
 
 重要:
   ${keyPath}
