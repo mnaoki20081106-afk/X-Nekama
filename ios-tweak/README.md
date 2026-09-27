@@ -30,6 +30,9 @@ X公式iOSアプリの投稿ComposerへX-Nekamaの入口を追加するTheos twe
 - `grok_imagine_composer_enabled`
 - `grokPostComposerEnabled`
 - `GROK_POST_COMPOSER_ENHANCE_USER_POST`
+- `postComposerTextGen`
+- `postComposerImageGen`
+- `postComposerImageGenWithPrompt`
 - `https://www.x.com/i/grok?text=`
 - `twitter://grok`
 - `xai-grok://imagine`
@@ -59,11 +62,11 @@ Composer画面には右下に `✦` Nekamaボタンを追加します。
 
 ### Grokで投稿文を作る
 
-X 12.29自身に含まれる `https://www.x.com/i/grok?text=` ルートへプロンプトを渡します。存在確認できていないprivate initializerは呼びません。
+まず現在のComposer/子ViewController/UIControlから `postComposerTextGen` を実行時探索し、X自身のネイティブGrok投稿文生成が見つかった場合だけそれを起動します。見つからない場合に限り、X 12.29自身に含まれる `https://www.x.com/i/grok?text=` ルートへフォールバックします。存在確認できていないprivate initializerは呼びません。
 
 ### Grokで画像を作る
 
-現在のComposerのView hierarchyから、X自身の
+まず `postComposerImageGenWithPrompt` / `postComposerImageGen` を現在のComposer・子Controller・UIControl target-actionから実行時探索します。見つからない場合は現在のComposerのView hierarchyから、X自身の
 
 - `GrokImagineComposerButton`
 - `GrokImagineComposerToolbarButton`
@@ -82,6 +85,7 @@ Nekamaメニューの「ランタイム診断」で以下を表示できます�
 - 現在Composer上にあるネイティブImagine button
 - `grokImagineComposePromptInputDidSubmit:` 実装class
 - `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` 実装class
+- `postComposerTextGen` / `postComposerImageGen` / `postComposerImageGenWithPrompt` 実装class
 
 X更新時はこの診断結果を基準に追従します。
 
@@ -103,8 +107,8 @@ IPAへ注入する場合は、利用者が用意した復号済みIPAへ `XNekam
 
 1. 実機でNekamaボタンとX内蔵Imagine起動を確認
 2. ランタイム診断からX 12.29の実Composer classを確定
-3. X内蔵 `GROK_POST_COMPOSER_ENHANCE_USER_POST` の実UI入口を特定
-4. Grok文章生成結果を同じComposerへ戻す経路を実バイナリ/実機イベントから特定
+3. `postComposerTextGen` が実機Composer上で起動することを確認し、生成結果の反映経路を観測
+4. Grok文章生成結果を同じComposerへ戻す経路を実バイナリ/実機イベントから確定
 5. `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` を観測し、画像生成完了をNekama Coreへ同期
 6. アカウント別Persona・顔・スマホケース・お手本画像をNekama Coreと接続
 7. 投稿キューとComposerを接続
