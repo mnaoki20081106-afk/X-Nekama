@@ -620,6 +620,11 @@ static void XNShowAlert(UIViewController *presenter,
 
 @end
 
+@interface UIViewController (XNekamaRuntime)
+- (void)xn_viewDidAppear:(BOOL)animated;
+- (void)xn_openNekamaPanel;
+@end
+
 static void XNEnsureNekamaButton(
     T1TweetComposeViewController *controller) {
     if (!controller.navigationItem) {
@@ -661,23 +666,30 @@ static void XNEnsureNekamaButton(
     }
 }
 
-%hook T1TweetComposeViewController
+@implementation UIViewController (XNekamaRuntime)
 
-- (void)viewDidLoad {
-    %orig;
-    XNEnsureNekamaButton(self);
+- (void)xn_viewDidAppear:(BOOL)animated {
+    [self xn_viewDidAppear:animated];
+
+    if ([NSStringFromClass(self.class)
+            isEqualToString:@"T1TweetComposeViewController"]) {
+        XNEnsureNekamaButton(
+            (T1TweetComposeViewController *)self);
+    }
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    %orig(animated);
-    XNEnsureNekamaButton(self);
-}
-
-%new
 - (void)xn_openNekamaPanel {
+    if (![NSStringFromClass(self.class)
+            isEqualToString:@"T1TweetComposeViewController"]) {
+        return;
+    }
+
+    T1TweetComposeViewController *compose =
+        (T1TweetComposeViewController *)self;
+
     XNNekamaPanelViewController *panel =
         [[XNNekamaPanelViewController alloc]
-            initWithComposeController:self];
+            initWithComposeController:compose];
 
     UINavigationController *navigationController =
         [[UINavigationController alloc]
@@ -686,9 +698,28 @@ static void XNEnsureNekamaButton(
     navigationController.modalPresentationStyle =
         UIModalPresentationPageSheet;
 
-    [self presentViewController:navigationController
-                       animated:YES
-                     completion:nil];
+    [compose presentViewController:navigationController
+                          animated:YES
+                        completion:nil];
 }
 
-%end
+@end
+
+__attribute__((constructor))
+static void XNInstallRuntimeHook(void) {
+    @autoreleasepool {
+        Method original =
+            class_getInstanceMethod(
+                UIViewController.class,
+                @selector(viewDidAppear:));
+
+        Method replacement =
+            class_getInstanceMethod(
+                UIViewController.class,
+                @selector(xn_viewDidAppear:));
+
+        if (original && replacement) {
+            method_exchangeImplementations(original, replacement);
+        }
+    }
+}
