@@ -14,6 +14,7 @@ jobs:
       - run: node --check server.mjs
       - run: node --check public/app.js
       - run: node --check cloudflare/src/index.mjs
+      - run: node --check cloudflare/setup.mjs
       - name: Install Cloudflare build dependencies
         working-directory: cloudflare
         run: npm install --ignore-scripts
