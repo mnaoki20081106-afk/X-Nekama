@@ -41,11 +41,22 @@ CREATE TABLE IF NOT EXISTS jobs (
  id TEXT PRIMARY KEY, account_id TEXT, kind TEXT, status TEXT, detail TEXT DEFAULT '',
  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS publish_locks (
+ account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+ draft_id TEXT NOT NULL, locked_at TEXT DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS drafts_due ON drafts(status,scheduled_at);
 CREATE INDEX IF NOT EXISTS ref_posts_ref ON ref_posts(ref_id);
 `);
 if (!db.prepare('PRAGMA table_info(accounts)').all().some(c=>c.name==='auto_approve')) db.exec('ALTER TABLE accounts ADD COLUMN auto_approve INTEGER DEFAULT 0');
-if (!db.prepare('PRAGMA table_info(drafts)').all().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
+const draftColumns=()=>db.prepare('PRAGMA table_info(drafts)').all();
+if (!draftColumns().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
+if (!draftColumns().some(c=>c.name==='content_fingerprint')) db.exec("ALTER TABLE drafts ADD COLUMN content_fingerprint TEXT DEFAULT ''");
+if (!draftColumns().some(c=>c.name==='queue_key')) db.exec('ALTER TABLE drafts ADD COLUMN queue_key TEXT');
+if (!draftColumns().some(c=>c.name==='next_attempt_at')) db.exec('ALTER TABLE drafts ADD COLUMN next_attempt_at TEXT');
+if (!draftColumns().some(c=>c.name==='last_attempt_at')) db.exec('ALTER TABLE drafts ADD COLUMN last_attempt_at TEXT');
+if (!draftColumns().some(c=>c.name==='last_error_kind')) db.exec("ALTER TABLE drafts ADD COLUMN last_error_kind TEXT DEFAULT ''");
+db.exec("CREATE INDEX IF NOT EXISTS drafts_retry_due ON drafts(status,scheduled_at,next_attempt_at); CREATE UNIQUE INDEX IF NOT EXISTS drafts_queue_key ON drafts(queue_key) WHERE queue_key IS NOT NULL; CREATE INDEX IF NOT EXISTS drafts_fingerprint ON drafts(account_id,content_fingerprint,status);");
 export const uid=()=>crypto.randomUUID();
 export const row=(sql,...args)=>db.prepare(sql).get(...args);
 export const all=(sql,...args)=>db.prepare(sql).all(...args);
