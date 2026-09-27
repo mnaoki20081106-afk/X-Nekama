@@ -6,3 +6,5 @@ node_modules/
 cloudflare/.dev.vars
 cloudflare/.env
 cloudflare/wrangler.toml
+cloudflare/.token-encryption-key
+cloudflare/.setup-state.json
