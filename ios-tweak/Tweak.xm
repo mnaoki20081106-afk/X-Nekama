@@ -53,6 +53,67 @@ static UIControl *NXFindImagineControl(UIView *view) {
     return nil;
 }
 
+static id NXControllerTreeObjectRespondingToSelector(UIViewController *controller, SEL selector) {
+    if (!controller) return nil;
+    if ([controller respondsToSelector:selector]) return controller;
+    for (UIViewController *child in controller.childViewControllers) {
+        id match = NXControllerTreeObjectRespondingToSelector(child, selector);
+        if (match) return match;
+    }
+    return nil;
+}
+
+static BOOL NXTriggerNoArgSelector(UIViewController *composer, NSString *selectorName) {
+    SEL selector = NSSelectorFromString(selectorName);
+    id target = NXControllerTreeObjectRespondingToSelector(composer, selector);
+    if (!target) return NO;
+    ((void (*)(id, SEL))objc_msgSend)(target, selector);
+    NSLog(@"[X-Nekama] invoked native selector %@ on %@", selectorName, NSStringFromClass([target class]));
+    return YES;
+}
+
+static BOOL NXControlHasActionToken(UIControl *control, UIControlEvents event, NSString *token) {
+    NSString *needle = token.lowercaseString;
+    for (id target in control.allTargets) {
+        NSArray<NSString *> *actions = [control actionsForTarget:target forControlEvent:event];
+        for (NSString *action in actions) {
+            if ([action.lowercaseString containsString:needle]) return YES;
+        }
+    }
+    return NO;
+}
+
+static UIControl *NXFindControlWithActionToken(UIView *view, NSString *token, UIControlEvents *eventOut) {
+    if (!view) return nil;
+    if ([view isKindOfClass:UIControl.class]) {
+        UIControl *control = (UIControl *)view;
+        if (NXControlHasActionToken(control, UIControlEventTouchUpInside, token)) {
+            if (eventOut) *eventOut = UIControlEventTouchUpInside;
+            return control;
+        }
+        if (@available(iOS 14.0, *)) {
+            if (NXControlHasActionToken(control, UIControlEventPrimaryActionTriggered, token)) {
+                if (eventOut) *eventOut = UIControlEventPrimaryActionTriggered;
+                return control;
+            }
+        }
+    }
+    for (UIView *subview in view.subviews) {
+        UIControl *control = NXFindControlWithActionToken(subview, token, eventOut);
+        if (control) return control;
+    }
+    return nil;
+}
+
+static BOOL NXTriggerControlAction(UIViewController *composer, NSString *token) {
+    UIControlEvents event = 0;
+    UIControl *control = NXFindControlWithActionToken(composer.view, token, &event);
+    if (!control || event == 0) return NO;
+    [control sendActionsForControlEvents:event];
+    NSLog(@"[X-Nekama] triggered native control %@ for %@", NXClassName(control), token);
+    return YES;
+}
+
 static NSArray<NSString *> *NXClassesImplementingSelector(SEL selector) {
     int count = objc_getClassList(NULL, 0);
     if (count <= 0) return @[];
@@ -86,14 +147,23 @@ static NSString *NXRuntimeReport(UIViewController *composer) {
         NXClassesImplementingSelector(NSSelectorFromString(@"grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:"));
     NSArray *promptDelegates =
         NXClassesImplementingSelector(NSSelectorFromString(@"grokImagineComposePromptInputDidSubmit:"));
+    NSArray *textGenClasses =
+        NXClassesImplementingSelector(NSSelectorFromString(@"postComposerTextGen"));
+    NSArray *imageGenClasses =
+        NXClassesImplementingSelector(NSSelectorFromString(@"postComposerImageGen"));
+    NSArray *imagePromptClasses =
+        NXClassesImplementingSelector(NSSelectorFromString(@"postComposerImageGenWithPrompt"));
 
     return [NSString stringWithFormat:
-        @"X %@ (%@)\nComposer: %@\n\nGrok Imagine\nButton class: %@\nToolbar class: %@\nPresentationManager: %@\nVisible native button: %@\n\nAttachment delegate classes:\n%@\n\nPrompt delegate classes:\n%@",
+        @"X %@ (%@)\nComposer: %@\n\nGrok Imagine\nButton class: %@\nToolbar class: %@\nPresentationManager: %@\nVisible native button: %@\n\nNative postComposerTextGen:\n%@\n\nNative postComposerImageGen:\n%@\n\nNative postComposerImageGenWithPrompt:\n%@\n\nAttachment delegate classes:\n%@\n\nPrompt delegate classes:\n%@",
         version, build, NSStringFromClass(composer.class),
         imagineButton ? @"YES" : @"NO",
         imagineToolbar ? @"YES" : @"NO",
         imagineManager ? @"YES" : @"NO",
         visibleImagine ? NXClassName(visibleImagine) : @"none",
+        textGenClasses.count ? [textGenClasses componentsJoinedByString:@"\n"] : @"none",
+        imageGenClasses.count ? [imageGenClasses componentsJoinedByString:@"\n"] : @"none",
+        imagePromptClasses.count ? [imagePromptClasses componentsJoinedByString:@"\n"] : @"none",
         attachmentDelegates.count ? [attachmentDelegates componentsJoinedByString:@"\n"] : @"none",
         promptDelegates.count ? [promptDelegates componentsJoinedByString:@"\n"] : @"none"];
 }
@@ -162,6 +232,13 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
 }
 
 - (void)openNativeImagine {
+    if (NXTriggerNoArgSelector(self.composer, @"postComposerImageGenWithPrompt") ||
+        NXTriggerNoArgSelector(self.composer, @"postComposerImageGen") ||
+        NXTriggerControlAction(self.composer, @"postcomposerimagegenwithprompt") ||
+        NXTriggerControlAction(self.composer, @"postcomposerimagegen")) {
+        return;
+    }
+
     UIControl *control = NXFindImagineControl(self.composer.view);
     if (control) {
         [control sendActionsForControlEvents:UIControlEventTouchUpInside];
@@ -171,6 +248,17 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     [self askForPromptWithTitle:@"Grokで画像生成"
                     placeholder:@"作りたい画像を説明"
                          prefix:@"X投稿用の画像を1枚生成してください。次の要件を優先してください。\n"];
+}
+
+- (void)openNativeTextGeneration {
+    if (NXTriggerNoArgSelector(self.composer, @"postComposerTextGen") ||
+        NXTriggerControlAction(self.composer, @"postcomposertextgen")) {
+        return;
+    }
+
+    [self askForPromptWithTitle:@"投稿文を作成"
+                    placeholder:@"今日の出来事・投稿テーマ"
+                         prefix:@"Xに投稿する自然な日本語の投稿文を1つだけ作ってください。説明や候補一覧は不要です。テーマ: "];
 }
 
 - (void)buttonTapped:(UIButton *)sender {
@@ -184,9 +272,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     [menu addAction:[UIAlertAction actionWithTitle:@"Grokで投稿文を作る"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
-        [self askForPromptWithTitle:@"投稿文を作成"
-                        placeholder:@"今日の出来事・投稿テーマ"
-                             prefix:@"Xに投稿する自然な日本語の投稿文を1つだけ作ってください。説明や候補一覧は不要です。テーマ: "];
+        [self openNativeTextGeneration];
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"Grokで画像を作る"
