@@ -14,56 +14,54 @@ X-Nekamaを一般公開する前の必須チェックです。
 4. 古い `.git` 履歴、ローカル設定、CIログ、ビルド成果物をコピーしない
 5. 可能なら個人名を含まないOrganization/ブランド名を配布元に使う
 
-`.mailmap`だけでは元commit objectのemailを削除できないため、公開履歴の匿名化には使わないでください。
-
 ## 2. Secrets
 
 次の値はIPA、JavaScript、D1、R2、GitHub repositoryへ入れません。
 
-- XAI_API_KEY
 - TOKEN_ENCRYPTION_KEY
 - Cloudflare API token
 - X Web session cookie
+- Xパスワード
 
-Cloudflare Worker runtimeでは、`XAI_API_KEY` と `TOKEN_ENCRYPTION_KEY` だけを **Workers Secrets** として設定します。
-
-X Web session CookieはWorkerが受け取り、TOKEN_ENCRYPTION_KEYでAES-256-GCM暗号化したciphertextだけをD1へ保存します。
+**XAI_API_KEYは使用しません。**
 
 ## 3. Tenant isolation
 
 公開版の全データは `owner_id` 単位で分離します。
 
-本番公開前に最低2つのテスト利用者を作り、以下を確認してください。
-
 - User AがUser Bのaccount IDを指定しても404/拒否
 - User AがUser Bのdraft IDを指定しても404/拒否
-- User AがUser Bのasset IDを指定しても画像を取得できない
+- User AがUser Bのasset IDを指定しても取得不可
 - ref / ref_postも同様
-- API responseにowner_id / encrypted Cookie / R2 keyが含まれない
+- responseにowner_id / encrypted Cookie / R2 keyを含めない
 
 ## 4. R2
 
-R2 bucketはprivateのまま使います。
-
 - Public Development URL (r2.dev): Disabled
 - Public Custom Domain: None
-- objectはWorker binding経由だけで取得
+- Workerで所有権確認後のみR2を読む
 - keyは `owner_id/random-id.ext`
-- WorkerはD1で所有権確認してからR2を読む
 
 ## 5. X session connection
 
-X Developer / OAuth 2.0は使用しません。
-
+- X Developer / OAuth 2.0は使用しない
 - XActionsでユーザー自身のX Webセッションを検証
 - パスワードは保存しない
-- CookieだけAES-256-GCM暗号化してD1へ保存
-- 追加認証が必要な場合はログイン済みCookie接続へ切り替える
-- 接続CookieはAPI responseやログへ出さない
+- CookieだけAES-256-GCM暗号化
+- 2FA/captcha等はログイン済みCookie方式
+- CookieをAPI response/logへ出さない
 
-## 6. Data deletion
+## 6. Grok generation
 
-公開版には `DELETE /api/me` とアプリ内の「データを削除」を用意しています。
+- 運営共有xAI APIキーなし
+- Worker/Node serverからapi.x.aiへ通信しない
+- 投稿文生成は端末のX/Grok
+- 文体分析は端末のX/Grok
+- 画像生成は端末のX/Grok
+- X-Nekamaはプロンプト/参照画像パックだけ作る
+- GrokのJSON/画像をX-Nekamaへ戻して検証・保存
+
+## 7. Data deletion
 
 削除対象:
 
@@ -73,24 +71,8 @@ X Developer / OAuth 2.0は使用しません。
 - drafts
 - refs / ref_posts
 - jobs
-- usage counters
 - audit events
 - R2 assets
-
-## 7. Cost / abuse protection
-
-shared XAI_API_KEYを利用者へ配布しません。
-
-Worker側で1ユーザー・1日あたりの上限を強制します。
-
-Default:
-
-- text generation: 20 API requests/day
-- image generation: 10 API requests/day
-
-`TEXT_GENERATION_DAILY_LIMIT` / `IMAGE_GENERATION_DAILY_LIMIT` で変更できます。
-
-UIを書き換えてもWorker側のD1 counterで拒否します。
 
 ## 8. Logs
 
@@ -98,24 +80,31 @@ UIを書き換えてもWorker側のD1 counterで拒否します。
 
 - X Web session Cookie
 - Xパスワード
-- XAI_API_KEY
 - 投稿本文
 - 画像base64
 - user email
 
-Cloudflare Observabilityを有効化する場合は、request bodyを記録しない設定を確認してください。
+## 9. Cost rule
 
-## 9. Release gate
+運営者がユーザーのために購入する以下の有料APIは使用しません。
 
-一般公開OKと判断する条件:
+- X Developer API
+- xAI API
+
+Cloudflare版は任意です。Cloudflare自体の利用料が発生し得るため、厳密な運営費0構成では必須にしません。
+
+## 10. Release gate
 
 - root CI: green
 - `node --check cloudflare/src/index.mjs`: green
 - `wrangler deploy --dry-run`: green
-- production D1 migration成功
+- runtimeにXAI_API_KEY/api.x.aiが存在しない
+- runtimeにX Developer有料API経路が存在しない
 - R2 public access disabled
 - 2-user tenant isolation E2E成功
 - self-delete E2E成功
-- XActionsによるtext-only実投稿E2E成功
-- XActionsによる画像付き実投稿E2E成功
+- XActions text-only実投稿成功
+- XActions画像付き実投稿成功
+- Grok週次プロンプト → JSON取込成功
+- Grok画像パック → 画像取込成功
 - public release repositoryにpersonal emailを含む過去履歴がない
