@@ -1,0 +1,5 @@
+.theos/
+packages/*.ipa
+packages/*.tipa
+packages/*.deb
+packages/com.atebits.Tweetie2.ipa
