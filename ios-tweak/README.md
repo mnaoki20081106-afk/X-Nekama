@@ -33,6 +33,8 @@ X 12.29内で確認できたGrok関連要素:
 1. 現在の下書き + NekamaプロファイルをGrok用プロンプトに変換してGrokを開く
 2. X内のGrok Imagineを開く
 3. 年齢・所在地・性格・口調の簡易プロファイルを保存
+4. 顔写真・スマホケース画像をアカウント別に保存
+5. 登録画像をXネイティブのGrok Imagine Lightboxの `sourceImages` 経路へ渡して画像編集を開始
 
 内部private APIを直接呼び出す前に、まずこの薄い統合層でX 12.29上の注入・UI表示・Grok遷移を確認する設計です。
 
@@ -62,9 +64,10 @@ packages/X-Nekama-sideloaded.ipa
 ## 次の段階
 
 - Xの現在アカウントとX-Nekamaプロファイルの1:1紐付け
-- 顔写真・スマホケース・参考画像ライブラリ
-- Grok生成結果をComposeへ戻すブリッジ
-- Grok Imagine生成画像をCompose attachmentへ渡すブリッジ
+- 顔写真・スマホケース以外の複数カテゴリ参考画像ライブラリ
+- Grokの文章生成結果はCompose本文へ戻すブリッジを実装済み
+- Grok Imagine生成画像はX本体の `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` → `addOrReplaceAttachment:animated:` 経路でComposeへ戻ることをX 12.29バイナリで確認済み
+- 登録済み顔/スマホケース画像はGrok Imagine LightboxへsourceImagesとして渡すブリッジを実装済み
 - 既存のX-Nekama投稿キューとの連携
 
 Xの内部クラス・feature switchへ直接依存する箇所は、バージョン更新で壊れやすいため、X 12.29の実体確認を行ってから段階的に追加します。
