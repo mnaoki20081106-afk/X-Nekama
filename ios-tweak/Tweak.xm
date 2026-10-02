@@ -226,9 +226,65 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
 
 @interface NXNekamaHelper : NSObject
 @property(nonatomic, weak) UIViewController *composer;
+@property(nonatomic, weak) UINavigationController *notificationNavigation;
+- (void)openNotificationManagement;
 @end
 
 @implementation NXNekamaHelper
+
+- (void)notificationSettingsUnavailable {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"通知設定を開けません"
+        message:@"このXの通知設定画面との互換性を確認できませんでした。Xの「設定とプライバシー → 通知 → 設定 → プッシュ通知」から変更してください。設定は変更していません。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+    [NXPresenter(self.composer) presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)closeNotificationSettings {
+    [self.notificationNavigation dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)openNativeNotificationSettings {
+    // Verified against the supplied X 12.29 (20) Objective-C metadata.
+    Class cls = NSClassFromString(@"T1UnifiedNotificationsSettingsViewController");
+    SEL initSelector = NSSelectorFromString(@"initWithAccount:");
+    SEL accountSelector = NSSelectorFromString(@"account");
+    Method initMethod = class_getInstanceMethod(cls,initSelector);
+    Method accountMethod = class_getInstanceMethod(self.composer.class,accountSelector);
+    if (!cls || ![cls isSubclassOfClass:UIViewController.class] || !initMethod || !accountMethod ||
+        strcmp(method_getTypeEncoding(initMethod),"@24@0:8@16") != 0 ||
+        strcmp(method_getTypeEncoding(accountMethod),"@16@0:8") != 0) {
+        [self notificationSettingsUnavailable]; return;
+    }
+    @try {
+        id account = ((id (*)(id,SEL))objc_msgSend)(self.composer,accountSelector);
+        if (!account) { [self notificationSettingsUnavailable]; return; }
+        UIViewController *settings = ((id (*)(id,SEL,id))objc_msgSend)([cls alloc],initSelector,account);
+        UIViewController *presenter = NXPresenter(self.composer);
+        if (!settings || !presenter) { [self notificationSettingsUnavailable]; return; }
+        UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:settings];
+        settings.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"閉じる" style:UIBarButtonItemStyleDone target:self action:@selector(closeNotificationSettings)];
+        navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+        self.notificationNavigation = navigation;
+        [presenter presentViewController:navigation animated:YES completion:nil];
+    } @catch (__unused NSException *exception) {
+        [self notificationSettingsUnavailable];
+    }
+}
+
+- (void)openNotificationManagement {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"通知を管理"
+        message:@"交流用のおすすめ設定\n\nON：ダイレクトメッセージ、返信\nOFF：いいね、リポスト、新規フォロワー、おすすめ、ニュース、スペース、フォロー先の投稿通知など\n\n次のX設定画面の「設定 → プッシュ通知」で切り替えてください。「@ポストと返信」が共通の項目ならメンションも残ります。複数アカウントはそれぞれ設定してください。\n\nこの案内を開いただけでは設定は変わりません。X内の通知一覧には影響せず、再署名IPAのプッシュ受信も実機確認が必要です。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Xの通知設定を開く" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self openNativeNotificationSettings];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"iPhoneの通知許可を確認" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString] options:@{} completionHandler:nil];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+    [NXPresenter(self.composer) presentViewController:alert animated:YES completion:nil];
+}
 
 - (NSURL *)validatedCoreURLFromString:(NSString *)value {
     NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -398,6 +454,12 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self configureCoreURL];
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"通知を管理（DM・返信中心）"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        [self openNotificationManagement];
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"X内蔵Grokで投稿文を作る（実験）"

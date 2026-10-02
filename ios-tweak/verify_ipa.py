@@ -28,6 +28,10 @@ REQUIRED_METHODS = {
             "setGrokImagineLightboxManager:": "v24@0:8@16",
             "grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:": "v40@0:8@16@24@32",
         },
+        "T1UnifiedNotificationsSettingsViewController": {
+            "initWithAccount:": "@24@0:8@16",
+            "account": "@16@0:8",
+        },
         "T1TweetComposeSingleTweetViewController": {
             "reloadCompositionText": "v16@0:8",
             "addOrReplaceAttachment:animated:": "v28@0:8@16B24",
