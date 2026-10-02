@@ -1,12 +1,20 @@
 import * as xactions from '../../x.mjs';
 import * as localAI from '../../ai.mjs';
 import {writeFile,unlink} from 'node:fs/promises';
+import {createRemoteEgressFetch,VpnEgressError} from '../../egress.mjs';
 
 const SESSION_COOKIE='nk_session';
 const SESSION_DAYS=30;
 const MAX_IMAGE_BYTES=5*1024*1024;
 const textEncoder=new TextEncoder();
 const textDecoder=new TextDecoder();
+
+function xTransport(env){
+  const endpoint=String(env.X_EGRESS_URL||'').trim();
+  const token=String(env.X_EGRESS_TOKEN||'');
+  if(!endpoint||token.length<24)throw new VpnEgressError('VPN egress is not configured');
+  return {fetch:createRemoteEgressFetch({endpoint,token})};
+}
 
 const json=(data,status=200,headers={})=>new Response(JSON.stringify(data),{
   status,
@@ -122,24 +130,24 @@ function publicAccount(a){
   copy.session_status='connected';
   return copy;
 }
-async function resolveXSession(body){
+async function resolveXSession(body,env){
   const cookies=String(body.cookies||'').trim();
   if(cookies){
-    const who=await xactions.verify(cookies);
+    const who=await xactions.verify(cookies,xTransport(env));
     return {who,cookies};
   }
   const username=String(body.username||'').replace(/^@/,'').trim();
   const password=String(body.password||'');
   const email=String(body.email||'').trim();
   if(!username||!password)throw Object.assign(new Error('x_login_required'),{status:400});
-  const result=await xactions.login(username,password,email);
+  const result=await xactions.login(username,password,email,xTransport(env));
   return {who:result.who,cookies:result.cookies};
 }
 async function connectXSession(request,env){
   const current=await sessionUser(request,env);
   const body=await readJson(request,32768);
   let resolved;
-  try{resolved=await resolveXSession(body)}
+  try{resolved=await resolveXSession(body,env)}
   catch(error){
     const message=String(error?.message||error);
     if(/two-factor|2FA|captcha|verification|LoginAcid/i.test(message)){
@@ -176,7 +184,7 @@ async function connectXSession(request,env){
   const character=account?.character_name||who.name||who.username;
   const bio=account?.bio||`架空のAIキャラクター｜${character}`;
   try{
-    await xactions.ensureBio(resolved.cookies,who.username,bio);
+    await xactions.ensureBio(resolved.cookies,who.username,bio,xTransport(env));
   }catch(error){
     throw Object.assign(new Error('x_profile_disclosure_failed'),{status:400});
   }
@@ -270,7 +278,7 @@ async function patchAccount(request,env,user,id){
   if('bio' in values && values.bio!==current.bio){
     try{
       const cookies=await accountSession(env,current);
-      await xactions.ensureBio(cookies,current.username,String(values.bio));
+      await xactions.ensureBio(cookies,current.username,String(values.bio),xTransport(env));
     }catch{
       return problem(502,'XプロフィールのAI表記を更新できませんでした');
     }
@@ -345,7 +353,7 @@ async function setDraftImageData(env,user,draft,data,name='投稿画像'){
 async function fetchReferencePosts(env,user,ref,account,requestedLimit){
   const limit=Math.min(500,Math.max(20,Number(requestedLimit)||100));
   const cookies=await accountSession(env,account);
-  const {profile,posts}=await xactions.collect(cookies,ref.username,limit);
+  const {profile,posts}=await xactions.collect(cookies,ref.username,limit,xTransport(env));
   const statements=(posts||[]).slice(0,limit).filter(p=>p?.id&&p?.text).map(p=>env.DB.prepare(`INSERT INTO ref_posts(id,owner_id,ref_id,text,posted_at,metrics_json,media_json)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner_id,ref_id,id) DO UPDATE SET text=excluded.text,posted_at=excluded.posted_at,metrics_json=excluded.metrics_json,media_json=excluded.media_json`)
     .bind(String(p.id),user.id,ref.id,String(p.text).slice(0,4000),p.createdAt||null,JSON.stringify(p.metrics||{}),JSON.stringify(p.media||[])));
@@ -458,7 +466,7 @@ async function publishDraft(env,draft){
   let tempPath=null;
   try{
     const cookies=await accountSession(env,account);
-    await xactions.checkBio(cookies,account.username);
+    await xactions.checkBio(cookies,account.username,xTransport(env));
     if(draft.image_id){
       const asset=await env.DB.prepare('SELECT * FROM assets WHERE id=? AND owner_id=?').bind(draft.image_id,draft.owner_id).first();
       if(!asset)throw Object.assign(new Error('image missing'),{deliveryStage:'upload'});
@@ -467,12 +475,19 @@ async function publishDraft(env,draft){
       tempPath=`/tmp/xnekama-${uid()}.${ext}`;
       await writeFile(tempPath,new Uint8Array(await object.arrayBuffer()));
     }
-    const postId=await xactions.publish(cookies,draft.text,tempPath,`架空AIキャラクター ${account.character_name} の生成画像`);
+    const postId=await xactions.publish(cookies,draft.text,tempPath,`架空AIキャラクター ${account.character_name} の生成画像`,xTransport(env));
     if(!postId)throw Object.assign(new Error('post id unavailable'),{deliveryStage:'submit'});
     await env.DB.prepare(`UPDATE drafts SET status='posted',x_post_id=?,posted_at=CURRENT_TIMESTAMP,next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
       .bind(String(postId),draft.id,draft.owner_id).run();
     await audit(env,draft.owner_id,'draft_posted',draft.id);
   }catch(error){
+    if(error?.code==='VPN_REQUIRED'){
+      const next=futureIso(60000);
+      await env.DB.prepare(`UPDATE drafts SET status='scheduled',attempt_count=CASE WHEN attempt_count>0 THEN attempt_count-1 ELSE 0 END,
+        next_attempt_at=?,last_error_kind='vpn_required',error='WARP接続待ち',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
+        .bind(next,draft.id,draft.owner_id).run();
+      return;
+    }
     const attempt=Number(draft.attempt_count||0)+1;
     const status=Number(error?.status||error?.response?.status||0);
     const stage=error?.deliveryStage||'preflight';
@@ -684,6 +699,7 @@ export default {
       if(status===404)return problem(404,'見つかりません');
       if(status===413)return problem(413,'データが大きすぎます');
       if(status===409)return problem(409,'現在の状態では実行できません');
+      if(status===503||error?.code==='VPN_REQUIRED')return problem(503,'VPN egress が未設定、到達不能、またはWARP未接続です');
       if(status===400){
         if(error?.message==='cookie_login_required')return problem(400,'このXアカウントは追加認証が必要です。ログイン済みCookieで接続してください');
         if(error?.message==='x_account_mismatch')return problem(400,'選択したアカウントとXセッションが一致しません');
