@@ -10,6 +10,17 @@ export class VpnEgressError extends Error{
   }
 }
 
+export function isAllowedXTarget(input){
+  try{
+    const url=input instanceof URL?input:new URL(String(input));
+    if(url.protocol!=='https:'||(url.port&&url.port!=='443'))return false;
+    const h=url.hostname.toLowerCase();
+    return h==='x.com'||h.endsWith('.x.com')||
+      h==='twitter.com'||h.endsWith('.twitter.com')||
+      h==='twimg.com'||h.endsWith('.twimg.com');
+  }catch{return false}
+}
+
 export function traceHasWarp(text){
   return /(?:^|\n)warp=(?:on|plus)(?:\n|$)/.test(String(text||'').replace(/\r/g,''));
 }

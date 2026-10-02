@@ -1,6 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRemoteEgressFetch,createVerifiedEgressFetch,traceHasWarp,VpnEgressError} from '../egress.mjs';
+import {createRemoteEgressFetch,createVerifiedEgressFetch,isAllowedXTarget,traceHasWarp,VpnEgressError} from '../egress.mjs';
+
+test('egress allowlist accepts only HTTPS X/Twitter media hosts on 443',()=>{
+  for(const url of [
+    'https://x.com/i/api/test',
+    'https://api.x.com/1.1/test.json',
+    'https://upload.x.com/i/media/upload.json',
+    'https://api.twitter.com/1.1/test.json',
+    'https://pbs.twimg.com/media/test.jpg'
+  ])assert.equal(isAllowedXTarget(url),true,url);
+  for(const url of [
+    'http://x.com/',
+    'https://x.com:444/',
+    'https://x.com.evil.example/',
+    'https://evilx.com/',
+    'https://example.com/'
+  ])assert.equal(isAllowedXTarget(url),false,url);
+});
 
 test('trace parser only accepts Cloudflare WARP on/plus',()=>{
   assert.equal(traceHasWarp('fl=1\nwarp=on\nip=1.2.3.4\n'),true);
