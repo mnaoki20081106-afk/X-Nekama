@@ -5,12 +5,13 @@ import {scrapeProfile} from './vendor/xactions/src/scrapers/twitter/http/profile
 import {scrapeTweets} from './vendor/xactions/src/scrapers/twitter/http/tweets.js';
 import {postTweet} from './vendor/xactions/src/scrapers/twitter/http/actions.js';
 import {uploadImage} from './vendor/xactions/src/scrapers/twitter/http/media.js';
+import {warpFetch} from './vpn.mjs';
 import {readFile} from 'node:fs/promises';
 
 function stageError(error,stage){if(error&&typeof error==='object'){if(!error.deliveryStage)error.deliveryStage=stage;return error}const wrapped=new Error(String(error));wrapped.deliveryStage=stage;return wrapped}
-function authFor(transport={}){return new TwitterAuth(transport.fetch?{fetch:transport.fetch}:{})}
+function authFor(transport={}){return new TwitterAuth({fetch:transport.fetch||warpFetch})}
 function clientFor(cookies,transport={}){
- const options={cookies,rateLimitStrategy:'error'};
+ const options={cookies,rateLimitStrategy:'error',fetch:warpFetch,maxRetries:0};
  if(transport.fetch)options.fetch=transport.fetch;
  if(transport.proxy)options.proxy=transport.proxy;
  return new TwitterHttpClient(options);

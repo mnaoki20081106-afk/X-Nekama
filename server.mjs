@@ -6,10 +6,15 @@ import {randomBytes,scryptSync,timingSafeEqual,createCipheriv,createDecipheriv,c
 import {db,dataDir,uid,row,all,run,publicAccount} from './db.mjs';
 import * as x from './x.mjs';
 import * as ai from './ai.mjs';
-import {fingerprintPost,classifyDeliveryError,retryDelayMs} from './delivery.mjs';
+import {warp} from './vpn.mjs';
+import {generateWithServerGrok} from './server-grok.mjs';
+import {sourceDocument} from './source.mjs';
+import {createPublisher} from './scheduler.mjs';
 import {createVerifiedEgressFetch} from './egress.mjs';
+import {fingerprintPost,classifyDeliveryError,retryDelayMs} from './delivery.mjs';
+
 const port=Number(process.env.PORT||3000),host=process.env.HOST||'127.0.0.1';
-const xTransport={fetch:createVerifiedEgressFetch({fetchImpl:globalThis.fetch})};
+const xTransport={fetch:createVerifiedEgressFetch({fetchImpl:(input,init)=>warp.fetch(input,init)})};
 const secretFile=join(dataDir,'.app-secret');
 const secret=process.env.APP_SECRET||(()=>{if(existsSync(secretFile))return readFileSync(secretFile,'utf8');const s=randomBytes(32).toString('hex');writeFileSync(secretFile,s,{mode:0o600,flag:'wx'});return s})();
 if(secret.length<32)throw Error('APP_SECRET は32文字以上にしてください');
@@ -58,11 +63,8 @@ function imageReferenceAssetsForDraft(d,a){
  return out;
 }
 function buildWeekPack(a,count){
- const refs=all("SELECT * FROM refs ORDER BY fetched_at DESC LIMIT 8");
- const referencePosts=all(`SELECT username,text,posted_at FROM (
-   SELECT r.username,p.text,p.posted_at,ROW_NUMBER() OVER(PARTITION BY p.ref_id ORDER BY p.posted_at DESC) AS rn
-   FROM ref_posts p JOIN refs r ON r.id=p.ref_id
-  ) WHERE rn<=50 ORDER BY rn,posted_at DESC LIMIT 400`);
+ const refs=a.reference_id?all("SELECT * FROM refs WHERE id=?",a.reference_id):all("SELECT * FROM refs WHERE account_id=? ORDER BY fetched_at DESC LIMIT 8",a.id);
+ const referencePosts=refs.flatMap(r=>all('SELECT ? username,text,posted_at FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 50',r.username,r.id));
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
  const interval=Math.min(365,Math.max(1,Number(a.activity_interval_days)||1));
  const futureDates=all("SELECT scheduled_at FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL",a.id)
@@ -70,7 +72,7 @@ function buildWeekPack(a,count){
  const latest=futureDates.length?Math.max(...futureDates):null;
  const seed=latest?new Date(latest+(interval-1)*86400000).toISOString():new Date().toISOString();
  const pack=ai.weekPrompt(a,refs,history,seed,count,referencePosts);
- return {account_id:a.id,count,prompt:pack.prompt,dates:pack.dates};
+ return {account_id:a.id,count,prompt:pack.prompt+"\n\n"+sourceDocument(a,refs,refs.flatMap(r=>all("SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC",r.id)),{bounded:true}),dates:pack.dates};
 }
 function importWeekPack(a,input,dates,count){
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
@@ -108,48 +110,29 @@ function buildImagePack(d){
 }
 function addJob(accountId,kind,work){const id=uid();run("INSERT INTO jobs(id,account_id,kind,status) VALUES(?,?,?,'running')",id,accountId,kind);Promise.resolve().then(work).then(detail=>run("UPDATE jobs SET status='done',detail=?,updated_at=datetime('now') WHERE id=?",String(detail||''),id)).catch(e=>{console.error(`${kind}:`,e);run("UPDATE jobs SET status='failed',detail=?,updated_at=datetime('now') WHERE id=?",String(e.message||e).slice(0,500),id)});return id}
 run("UPDATE jobs SET status='failed',detail='サーバー再起動により処理が中断しました',updated_at=datetime('now') WHERE status='running'");
- async function publishDue(){
- const now=new Date().toISOString();
- const due=all("SELECT * FROM drafts WHERE status='scheduled' AND scheduled_at<=? AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,scheduled_at),scheduled_at LIMIT 10",now,now);
- for(const d of due){
-  const a=requireAccount(d.account_id);
-  if(!a.enabled||!a.session_cipher)continue;
-  if(!acquirePublishLock(a.id,d.id))continue;
-  let claimed=false;
-  try{
-   const claim=run("UPDATE drafts SET status='publishing',attempt_count=attempt_count+1,last_attempt_at=datetime('now'),updated_at=datetime('now') WHERE id=? AND status='scheduled'",d.id);
-   if(!claim.changes)continue;
-   claimed=true;
-   const asset=d.image_id?row('SELECT * FROM assets WHERE id=?',d.image_id):null;
-   if(d.image_style&&!asset)throw Error('投稿画像が未設定です。画像をセットしてから再予約してください');
-   const imagePath=asset&&join(dataDir,'assets',asset.filename);
-   const cookies=decrypt(a.session_cipher);
-   await x.checkBio(cookies,a.username,xTransport);
-   const xId=await x.publish(cookies,d.text,imagePath,`架空AIキャラクター ${a.character_name} の生成画像`,xTransport);
-   run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",xId,d.id);
-  }catch(e){
-   console.error('publish:',e);
-   if(!claimed)continue;
-   if(e?.code==='VPN_REQUIRED'){
-    const next=new Date(Date.now()+60000).toISOString();
-    run("UPDATE drafts SET status='scheduled',attempt_count=MAX(attempt_count-1,0),next_attempt_at=?,last_error_kind='vpn_required',error='WARP接続待ち',updated_at=datetime('now') WHERE id=?",next,d.id);
-    continue;
-   }
-   const attempt=Number(d.attempt_count||0)+1;
-   const info=classifyDeliveryError(e,e?.deliveryStage||'preflight');
-   if(info.retryable&&attempt<MAX_DELIVERY_ATTEMPTS){
-    const next=new Date(Date.now()+retryDelayMs(info.kind,attempt,info.retryAfterMs)).toISOString();
-    run("UPDATE drafts SET status='scheduled',next_attempt_at=?,last_error_kind=?,error=?,updated_at=datetime('now') WHERE id=?",next,info.kind,`再試行待ち: ${info.message}`.slice(0,500),d.id);
-   }else{
-    const prefix=info.ambiguous?'送信結果を確認できません。X上の投稿有無を確認してください。 ':'';
-    run("UPDATE drafts SET status='failed',next_attempt_at=NULL,last_error_kind=?,error=?,updated_at=datetime('now') WHERE id=?",info.kind,(prefix+info.message).slice(0,500),d.id);
-   }
-  }finally{releasePublishLock(a.id,d.id)}
- }
-}
+const publishDue=createPublisher({row,all,run,requireAccount,acquirePublishLock,releasePublishLock,dataDir,decrypt,x,xTransport,warp,MAX_DELIVERY_ATTEMPTS});
 // Interrupted in-flight requests stay 'publishing': an ambiguous response must never auto-post twice.
 await mkdir(join(dataDir,'assets'),{recursive:true,mode:0o700});
-let busy=false;async function tick(){if(busy)return;busy=true;try{await publishDue()}catch(e){console.error('scheduler:',e)}finally{busy=false}}
+let refillBusy=false;
+async function refillDue(){
+ if(refillBusy||process.env.SERVER_GROK!=='1')return;refillBusy=true;
+ try{for(const a of all("SELECT * FROM accounts WHERE enabled=1 AND server_generate=1 AND session_cipher IS NOT NULL AND (generation_next_at='' OR generation_next_at<=?)",new Date().toISOString())){
+  if(row("SELECT 1 FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') LIMIT 1",a.id))continue;
+  try{
+   if(!a.reference_id||!row("SELECT 1 FROM ref_posts WHERE ref_id=? LIMIT 1",a.reference_id))throw Error('お手本の投稿取得が必要です');
+   await warp.ensure();
+   const pack=buildWeekPack(a,Math.min(21,Math.max(1,Number(a.posting_frequency)||7)));
+   const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
+   const value=await generateWithServerGrok(decrypt(a.session_cipher),pack.prompt+'\n画像を使わず、全件image_styleをnullにしてください。',{validate:value=>{const posts=ai.parseWeekResult(value,{dates:pack.dates,history,count:pack.count});if(posts.length!==pack.count||posts.some(p=>p.image_style))throw Error('未完了・重複・画像付きの返答');return value;}});
+   const current=requireAccount(a.id);
+   if(!current.enabled||!current.server_generate||current.config_revision!==a.config_revision||row("SELECT 1 FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') LIMIT 1",a.id))continue;
+   const result=importWeekPack(current,value,pack.dates,pack.count);
+   run("UPDATE accounts SET generation_error='',generation_next_at=? WHERE id=?",new Date(Date.now()+60000).toISOString(),a.id);
+   run("INSERT INTO jobs(id,account_id,kind,status,detail) VALUES(?,?,?,'done',?)",uid(),a.id,'server_grok',`${result.count}件生成`);
+  }catch(e){run("UPDATE accounts SET generation_error=?,generation_next_at=? WHERE id=?",String(e.message||e).slice(0,500),new Date(Date.now()+3600000).toISOString(),a.id);}
+ }}finally{refillBusy=false;}
+}
+let busy=false;async function tick(){if(busy)return;busy=true;try{await publishDue();void refillDue().catch(e=>console.error("refill:",e.message))}catch(e){console.error('scheduler:',e)}finally{busy=false}}
 setInterval(tick,30000).unref();
 setTimeout(tick,1000).unref();
 const staticFiles={'/':['public/index.html','text/html'],'/app.js':['public/app.js','text/javascript'],'/style.css':['public/style.css','text/css'],'/favicon.svg':['public/favicon.svg','image/svg+xml']};
@@ -162,16 +145,30 @@ const server=http.createServer(async(req,res)=>{try{
  if(!authorized(req))fail(401,'ログインしてください');
  if(method!=='GET'){const origin=req.headers.origin,hostHeader=req.headers.host;if(origin&&new URL(origin).host!==hostHeader)fail(403,'送信元を確認してください')}
  if(method==='POST'&&path==='/api/logout'){res.setHeader('Set-Cookie','session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return json(res,200,{ok:true})}
- if(method==='GET'&&path==='/api/state'){return json(res,200,{accounts:all('SELECT * FROM accounts ORDER BY created_at DESC').map(publicAccount),refs:all('SELECT * FROM refs ORDER BY created_at DESC'),assets:all('SELECT id,kind,category,account_id,name,mime,created_at FROM assets ORDER BY created_at DESC'),drafts:all('SELECT * FROM drafts ORDER BY scheduled_at DESC,created_at DESC LIMIT 500'),jobs:all('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30'),configured:true,generation_mode:'device_grok',auth_mode:'password'})}
+ if(method==='GET'&&path==='/api/state'){return json(res,200,{accounts:all('SELECT * FROM accounts ORDER BY created_at DESC').map(publicAccount),refs:all('SELECT * FROM refs ORDER BY created_at DESC'),assets:all('SELECT id,kind,category,account_id,name,mime,created_at FROM assets ORDER BY created_at DESC'),drafts:all('SELECT * FROM drafts ORDER BY scheduled_at DESC,created_at DESC LIMIT 500'),jobs:all('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30'),configured:true,generation_mode:process.env.SERVER_GROK==='1'?'server_grok':'device_grok',vpn:warp.state(),auth_mode:'password'})}
+ if(method==='GET'&&/^\/api\/accounts\/[^/]+\/source$/.test(path)){const a=requireAccount(path.split('/')[3]);const refs=a.reference_id?all('SELECT * FROM refs WHERE id=?',a.reference_id):all('SELECT * FROM refs WHERE account_id=?',a.id);const posts=refs.flatMap(r=>all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC',r.id));return json(res,200,{text:sourceDocument(a,refs,posts),fetched_count:posts.length});}
+ if(method==='POST'&&path==='/api/device-source'){
+  const b=await body(req),username=String(b.username||'').toLowerCase();const a=row('SELECT * FROM accounts WHERE lower(username)=?',username);if(!a)fail(404,'先にサーバーに同じXアカウントを登録してください');
+  const reference=String(b.reference||'').replace(/^@/,'');if(!/^[A-Za-z0-9_]{1,15}$/.test(reference))fail(400,'お手本IDを確認してください');
+  const posts=Array.isArray(b.reference_posts)?b.reference_posts:[];if(posts.length>10000)fail(400,'投稿件数が多すぎます');
+  for(const post of posts)if(!/^\d{1,25}$/.test(String(post.id||''))||typeof post.text!=='string'||post.text.length>10000)fail(400,'参考投稿の形式を確認してください');
+  db.exec('BEGIN');try{
+   let ref=row('SELECT * FROM refs WHERE lower(username)=?',reference.toLowerCase());if(!ref){const id=uid();run('INSERT INTO refs(id,username,account_id) VALUES(?,?,?)',id,reference,a.id);ref={id};}
+   for(const post of posts)run('INSERT OR REPLACE INTO ref_posts(id,ref_id,text,posted_at) VALUES(?,?,?,?)',post.id,ref.id,post.text,post.at||null);
+   run("UPDATE refs SET fetched_at=datetime('now'),account_id=? WHERE id=?",a.id,ref.id);
+   run("UPDATE accounts SET reference_id=?,config_revision=config_revision+1,updated_at=datetime('now') WHERE id=?",ref.id,a.id);
+   db.exec('COMMIT');
+  }catch(e){db.exec('ROLLBACK');throw e}return json(res,200,{ok:true,count:posts.length});
+ }
  if(method==='GET'&&path.startsWith('/api/assets/')){const asset=row('SELECT * FROM assets WHERE id=?',path.slice(12));if(!asset)fail(404,'画像なし');const download=new URL(req.url,'http://localhost').searchParams.has('download');res.writeHead(200,{'content-type':asset.mime,'cache-control':'private, max-age=300','x-content-type-options':'nosniff',...(download?{'content-disposition':`attachment; filename="${asset.filename}"`}:{})});return res.end(await readFile(join(dataDir,'assets',asset.filename)))}
  if(method==='POST'&&path==='/api/accounts'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'XのIDを確認してください');const id=uid();run('INSERT INTO accounts(id,username,display_name,character_name,bio) VALUES(?,?,?,?,?)',id,username,String(b.display_name||username).slice(0,80),String(b.character_name||b.display_name||username).slice(0,80),`架空のAIキャラクター｜${String(b.character_name||username).slice(0,60)}`);return json(res,201,{id})}
  let m=path.match(/^\/api\/accounts\/([^/]+)$/);
- if(m&&method==='PATCH'){const current=requireAccount(m[1]);const b=await body(req);const keys=['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images'];const values=Object.fromEntries(keys.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(Object.hasOwn(values,'enabled'))values.enabled=values.enabled===true?1:0;if(Object.hasOwn(values,'auto_approve'))values.auto_approve=values.auto_approve===true?1:0;if(Object.hasOwn(values,'auto_generate_images')){if(values.auto_generate_images===true)fail(400,'画像生成は端末のGrokで行います');values.auto_generate_images=0;}if(!/AI/i.test(String(values.bio??current.bio))||!/(架空|バーチャル)/.test(String(values.bio??current.bio)))fail(400,'プロフィールに架空のAIキャラクターである旨を記載してください');if(String(values.bio??current.bio).length>160)fail(400,'プロフィールは160文字以内にしてください');if(values.age!=null&&values.age<18)fail(400,'キャラクターの年齢は18歳以上にしてください');if(values.activity_interval_days!=null){values.activity_interval_days=Number(values.activity_interval_days);if(!Number.isInteger(values.activity_interval_days)||values.activity_interval_days<1||values.activity_interval_days>365)fail(400,'浮上頻度は1〜365日の整数で設定してください');}if(values.enabled&&!current.session_cipher)fail(400,'先にX接続をしてください');if(values.auto_approve&&!(values.enabled??current.enabled))fail(400,'自動承認には運用ONが必要です');if(!Object.keys(values).length)fail(400,'変更項目がありません');if(values.bio!=null&&values.bio!==current.bio&&current.session_cipher){try{await x.ensureBio(decrypt(current.session_cipher),current.username,String(values.bio),xTransport)}catch(e){fail(502,'Xプロフィールを更新できませんでした: '+e.message)}}run(`UPDATE accounts SET ${Object.keys(values).map(k=>k+'=?').join(',')},updated_at=datetime('now') WHERE id=?`,...Object.values(values).map(v=>v??''),m[1]);return json(res,200,{ok:true})}
+ if(m&&method==='PATCH'){const current=requireAccount(m[1]);const b=await body(req);const keys=['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images','custom_instructions','reference_id','server_generate'];const values=Object.fromEntries(keys.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(Object.hasOwn(values,'server_generate')){values.server_generate=values.server_generate===true?1:0;if(values.server_generate&&process.env.SERVER_GROK!=='1')fail(400,'サーバーGrokを先に設定してください');}if(values.reference_id&&!row('SELECT 1 FROM refs WHERE id=?',values.reference_id))fail(400,'お手本を確認してください');if(values.custom_instructions!=null&&String(values.custom_instructions).length>4000)fail(400,'追加指示は4000文字以内にしてください');if(Object.hasOwn(values,'enabled'))values.enabled=values.enabled===true?1:0;if(Object.hasOwn(values,'auto_approve'))values.auto_approve=values.auto_approve===true?1:0;if(Object.hasOwn(values,'auto_generate_images')){if(values.auto_generate_images===true)fail(400,'画像生成は端末のGrokで行います');values.auto_generate_images=0;}if(!/AI/i.test(String(values.bio??current.bio))||!/(架空|バーチャル)/.test(String(values.bio??current.bio)))fail(400,'プロフィールに架空のAIキャラクターである旨を記載してください');if(String(values.bio??current.bio).length>160)fail(400,'プロフィールは160文字以内にしてください');if(values.age!=null&&values.age<18)fail(400,'キャラクターの年齢は18歳以上にしてください');if(values.activity_interval_days!=null){values.activity_interval_days=Number(values.activity_interval_days);if(!Number.isInteger(values.activity_interval_days)||values.activity_interval_days<1||values.activity_interval_days>365)fail(400,'浮上頻度は1〜365日の整数で設定してください');}if(values.enabled&&!current.session_cipher)fail(400,'先にX接続をしてください');if(values.auto_approve&&!(values.enabled??current.enabled))fail(400,'自動承認には運用ONが必要です');if(!Object.keys(values).length)fail(400,'変更項目がありません');if(values.bio!=null&&values.bio!==current.bio&&current.session_cipher){try{await x.ensureBio(decrypt(current.session_cipher),current.username,String(values.bio),xTransport)}catch(e){fail(502,'Xプロフィールを更新できませんでした: '+e.message)}}run(`UPDATE accounts SET ${Object.keys(values).map(k=>k+'=?').join(',')},config_revision=config_revision+1,updated_at=datetime('now') WHERE id=?`,...Object.values(values).map(v=>v??''),m[1]);return json(res,200,{ok:true})}
  if(m&&method==='DELETE'){requireAccount(m[1]);db.exec('BEGIN');try{run('DELETE FROM drafts WHERE account_id=?',m[1]);run('DELETE FROM accounts WHERE id=?',m[1]);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return json(res,200,{ok:true})}
  m=path.match(/^\/api\/accounts\/([^/]+)\/connect$/);
- if(m&&method==='POST'){const a=requireAccount(m[1]),b=await body(req,16384);let result;try{if(b.cookies){result={cookies:String(b.cookies),who:await x.verify(String(b.cookies),xTransport)}}else if(b.password){result=await x.login(a.username,String(b.password),String(b.email||''),xTransport)}else fail(400,'Xパスワードまたはログイン済みCookieを入力してください')}catch(e){if(e.status)throw e;fail(502,'Xログインに失敗しました: '+String(e.message||e).slice(0,220))}if(result.who?.username?.toLowerCase()!==a.username.toLowerCase())fail(400,`接続先が @${a.username} ではありません`);try{await x.ensureBio(result.cookies,a.username,a.bio,xTransport)}catch(e){fail(502,'XプロフィールのAI表記を設定できませんでした: '+e.message)}run("UPDATE accounts SET session_cipher=?,session_status='connected',updated_at=datetime('now') WHERE id=?",encrypt(result.cookies),a.id);return json(res,200,{username:a.username,transport:'xactions-session'})}
+ if(m&&method==='POST'){const a=requireAccount(m[1]),b=await body(req,16384);let result;try{if(b.cookies){result={cookies:String(b.cookies),who:await x.verify(String(b.cookies),xTransport)}}else if(b.password){result=await x.login(a.username,String(b.password),String(b.email||''),xTransport)}else fail(400,'Xパスワードまたはログイン済みCookieを入力してください')}catch(e){if(e.status)throw e;fail(502,'Xログインに失敗しました: '+String(e.message||e).slice(0,220))}if(result.who?.username?.toLowerCase()!==a.username.toLowerCase())fail(400,`接続先が @${a.username} ではありません`);try{await x.ensureBio(result.cookies,a.username,a.bio,xTransport)}catch(e){fail(502,'XプロフィールのAI表記を設定できませんでした: '+e.message)}run("UPDATE accounts SET session_cipher=?,session_status='connected',config_revision=config_revision+1,updated_at=datetime('now') WHERE id=?",encrypt(result.cookies),a.id);return json(res,200,{username:a.username,transport:'xactions-session'})}
  m=path.match(/^\/api\/accounts\/([^/]+)\/disconnect$/);
- if(m&&method==='POST'){requireAccount(m[1]);run("UPDATE accounts SET session_cipher=NULL,enabled=0,session_status='unconnected' WHERE id=?",m[1]);return json(res,200,{ok:true})}
+ if(m&&method==='POST'){requireAccount(m[1]);run("UPDATE accounts SET session_cipher=NULL,enabled=0,session_status='unconnected',config_revision=config_revision+1 WHERE id=?",m[1]);return json(res,200,{ok:true})}
  if(method==='POST'&&path==='/api/refs'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'IDを確認してください');const id=uid();run('INSERT INTO refs(id,username) VALUES(?,?)',id,username);return json(res,201,{id})}
  m=path.match(/^\/api\/refs\/([^/]+)$/);
  if(m&&method==='DELETE'){run('DELETE FROM refs WHERE id=?',m[1]);return json(res,200,{ok:true})}

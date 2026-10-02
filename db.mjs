@@ -55,6 +55,8 @@ if (!accountColumns().some(c=>c.name==='gender')) db.exec("ALTER TABLE accounts 
 if (!accountColumns().some(c=>c.name==='occupation')) db.exec("ALTER TABLE accounts ADD COLUMN occupation TEXT DEFAULT ''");
 if (!accountColumns().some(c=>c.name==='first_person')) db.exec("ALTER TABLE accounts ADD COLUMN first_person TEXT DEFAULT ''");
 if (!accountColumns().some(c=>c.name==='activity_interval_days')) db.exec("ALTER TABLE accounts ADD COLUMN activity_interval_days INTEGER DEFAULT 1");
+for(const [name,sql] of [['custom_instructions',"TEXT DEFAULT ''"],['reference_id',"TEXT DEFAULT ''"],['server_generate','INTEGER DEFAULT 0'],['generation_next_at',"TEXT DEFAULT ''"],['generation_error',"TEXT DEFAULT ''"],['config_revision','INTEGER DEFAULT 0']])
+ if(!accountColumns().some(c=>c.name===name))db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
 const draftColumns=()=>db.prepare('PRAGMA table_info(drafts)').all();
 if (!draftColumns().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
 if (!draftColumns().some(c=>c.name==='content_fingerprint')) db.exec("ALTER TABLE drafts ADD COLUMN content_fingerprint TEXT DEFAULT ''");

@@ -1,5 +1,6 @@
 #import "Autopilot.h"
 #import "VPNGate.h"
+#import "ServerManager.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -523,11 +524,13 @@ void NXAutopilotSetComposer(UIViewController *composer) {
     if (!engine.submissionStarted) engine.composer=composer;
     engine.account=account;
 }
-void NXAutopilotOpen(UIViewController *presenter) { [[NXAutopilot shared] open:presenter]; }
+NSDictionary *NXDeviceSource(void){NXAutopilot *e=[NXAutopilot shared];return @{@"username":NXString(e.state[@"username"]),@"reference":NXString(e.state[@"reference"]),@"reference_posts":e.state[@"reference_posts"] ?: @[]};}
+void NXAutopilotOpen(UIViewController *presenter) { NXServerManagerOpen(presenter); }
 void NXAutopilotInstall(void) {
     NXVPNInstall();
     NXFactoryIMPs=[NSMutableDictionary dictionary];
     Method factory=class_getClassMethod(NSURLSession.class,@selector(sessionWithConfiguration:delegate:delegateQueue:));
     NXOriginalSessionFactory=method_setImplementation(factory,(IMP)NXSessionFactory);
     NXHookSession(NSURLSession.sharedSession);
+    NXServerManagerInstall();
 }

@@ -2,6 +2,7 @@ FROM node:24-alpine
 WORKDIR /app
 RUN apk add --no-cache su-exec
 COPY --chown=node:node . .
+RUN npm ci --omit=dev --ignore-scripts
 RUN mkdir -p /app/data && chown node:node /app/data
 ENV HOST=0.0.0.0 PORT=3000 DATA_DIR=/app/data
 EXPOSE 3000
