@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import {WarpTransport,parseWarpProxy} from '../vpn.mjs';
-import {sourceDocument,isMissed} from '../source.mjs';
+import {sourceDocument,isMissed,referencePlan} from '../source.mjs';
 import {unwrapGrokJSON} from '../server-grok.mjs';
 
 test('VPN transport validates loopback-only SOCKS configuration',()=>{
@@ -35,4 +35,10 @@ test('source export retains all records; generation sample includes oldest and n
 test('overdue and Grok completion parsing reject malformed inputs',()=>{
  const now=Date.now();assert.equal(isMissed(new Date(now-900000).toISOString(),now),false);assert.equal(isMissed(new Date(now-900001).toISOString(),now),true);assert.equal(isMissed('invalid',now),true);
  assert.deepEqual(unwrapGrokJSON('```json\n{"posts":[]}\n```'),{posts:[]});assert.throws(()=>unwrapGrokJSON('{"posts":['));
+});
+
+test('reference timing preserves the observed hourly cadence as explicit JST slots',()=>{
+ const now=Date.now();const posts=Array.from({length:5},(_,i)=>({posted_at:new Date(now-(5-i)*3600000).toISOString()}));
+ const plan=referencePlan(posts,3,now);assert.equal(plan.interval_ms,3600000);assert.equal(plan.dates.length,3);
+ const times=plan.dates.map(p=>Date.parse(p.date+'T'+p.time+':00+09:00'));assert.equal(times[1]-times[0],3600000);
 });

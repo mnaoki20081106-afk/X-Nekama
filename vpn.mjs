@@ -18,7 +18,7 @@ export class WarpTransport{
   try{return await this.pending}finally{this.pending=null;}
  }
  async ensure(){if(this.now()-this.verifiedAt>=3000)await this.probe();}
- async fetch(input,init={}){await this.ensure();try{return await this.fetchImpl(input,{...init,dispatcher:this.getDispatcher()});}catch(error){this.verifiedAt=-Infinity;throw error;}}
+ async fetch(input,init={}){await this.ensure();try{return await this.fetchImpl(input,{...init,dispatcher:this.getDispatcher(),signal:init.signal?AbortSignal.any([init.signal,AbortSignal.timeout(45000)]):AbortSignal.timeout(45000)});}catch(error){this.verifiedAt=-Infinity;throw error;}}
  state(){return {required:true,ready:this.now()-this.verifiedAt<3000,configured:!!this.proxy,message:this.message};}
 }
 export const warp=new WarpTransport();
