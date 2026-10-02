@@ -7,13 +7,13 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node server.mjs",
-    "dev": "node --watch server.mjs",
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --env-file-if-exists=.env --watch server.mjs",
     "test": "node --test",
     "cf:migrate": "wrangler d1 migrations apply DB --remote --config wrangler.toml",
     "cf:deploy": "npm run cf:migrate && wrangler deploy --config wrangler.toml",
     "deploy": "npm run cf:migrate && wrangler deploy --config wrangler.toml",
-    "egress": "node vpn-egress.mjs"
+    "egress": "node --env-file-if-exists=.env vpn-egress.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"
