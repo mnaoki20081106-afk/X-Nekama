@@ -51,6 +51,11 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
 
+      - name: Test native Grok result handling
+        run: |
+          swiftc -module-name Grok ios-tweak/NativeGrok.swift ios-tweak/tests/NativeGrokTests.swift -o /tmp/native-grok-tests
+          /tmp/native-grok-tests
+
       - name: Upload tweak package
         uses: actions/upload-artifact@v4
         with:

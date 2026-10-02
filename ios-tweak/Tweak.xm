@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
+#import "Autopilot.h"
 #include <string.h>
 
 static const void *kNXButtonKey = &kNXButtonKey;
@@ -375,8 +376,14 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     if (!presenter) return;
     UIAlertController *menu =
         [UIAlertController alertControllerWithTitle:@"Nekama"
-                                            message:@"安定運用はX-Nekama Core（公式xAI API）を使用します。X内蔵Grok連携は実験機能です。"
+                                            message:@"文章中心。内蔵Grokを利用し、参考投稿の傾向からオリジナルの投稿を作ります。"
                                      preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"文章中心の自動運用"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        NXAutopilotOpen(NXPresenter(self.composer));
+    }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"X-Nekama Coreを開く"
                                              style:UIAlertActionStyleDefault
@@ -543,6 +550,7 @@ static void NXComposerViewDidAppear(id self, SEL _cmd, BOOL animated) {
         ((void (*)(id, SEL, BOOL))original)(self, _cmd, animated);
     }
     if ([self isKindOfClass:UIViewController.class]) {
+        NXAutopilotSetComposer((UIViewController *)self);
         NXAttachButton((UIViewController *)self);
     }
 }
@@ -592,6 +600,7 @@ static void NXImageLoaded(__unused const struct mach_header *header, __unused in
 
 __attribute__((constructor)) static void NXBootstrap(void) {
     @autoreleasepool {
+        NXAutopilotInstall();
         NXOriginalViewDidAppear = [NSMutableDictionary dictionary];
         NXHookedClasses = [NSMutableSet set];
         NXOriginalGrokAttachmentDidAdd = [NSMutableDictionary dictionary];

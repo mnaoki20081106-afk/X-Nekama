@@ -9,7 +9,7 @@ cd "$ROOT"
 python3 ./verify_ipa.py "$IPA"
 
 case "$MODE" in
-  --sideloaded|--trollstore)
+  --sideloaded|--sidestore|--trollstore)
     make clean
     rm -rf .theos
     make
@@ -31,7 +31,11 @@ case "$MODE" in
       OUT="$ROOT/packages/X-Nekama-X12.29.ipa"
     fi
 
-    cyan -i "$IPA" -o "$OUT" --ignore-encrypted -uwf "$DYLIB"
+    if [[ "$MODE" == "--sidestore" ]]; then
+      cyan -i "$IPA" -o "$OUT" -n "X-Nekama" -u -w -e -f "$DYLIB"
+    else
+      cyan -i "$IPA" -o "$OUT" -u -w -f "$DYLIB"
+    fi
     echo "Created: $OUT"
     ;;
   --rootless)
@@ -47,7 +51,7 @@ case "$MODE" in
     make package
     ;;
   *)
-    echo "Usage: $0 [--sideloaded|--trollstore|--rootless|--rootfull]" >&2
+    echo "Usage: $0 [--sidestore|--sideloaded|--trollstore|--rootless|--rootfull]" >&2
     exit 2
     ;;
 esac
