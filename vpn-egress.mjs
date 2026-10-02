@@ -19,9 +19,9 @@ const sameToken=value=>{
   const a=Buffer.from(String(value||'')),b=Buffer.from(token);
   return a.length===b.length&&timingSafeEqual(a,b);
 };
-const json=(res,status,data)=>{
+const json=(res,status,data,headers={})=>{
   const body=Buffer.from(JSON.stringify(data));
-  res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','content-length':body.length});
+  res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','content-length':body.length,...headers});
   res.end(body);
 };
 async function readBody(req){
@@ -87,7 +87,8 @@ const server=http.createServer(async(req,res)=>{
     res.end(bytes);
   }catch(error){
     const status=Number(error?.status)||502;
-    json(res,status,{error:error?.code||'egress_failed',message:String(error?.message||error).slice(0,300)});
+    json(res,status,{error:error?.code||'egress_failed',message:String(error?.message||error).slice(0,300)},
+      error?.code==='VPN_REQUIRED'?{'x-xnekama-egress-error':'VPN_REQUIRED'}:{});
   }
 });
 
