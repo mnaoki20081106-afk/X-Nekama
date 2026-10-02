@@ -363,7 +363,7 @@ async function fetchReferencePosts(env,user,ref,account,requestedLimit){
   return statements.length;
 }
 async function buildAnalysisPack(env,user,ref){
-  const rows=await env.DB.prepare('SELECT text,posted_at,media_json FROM ref_posts WHERE owner_id=? AND ref_id=? ORDER BY posted_at DESC LIMIT 120')
+  const rows=await env.DB.prepare('SELECT text,posted_at,media_json FROM ref_posts WHERE owner_id=? AND ref_id=? ORDER BY posted_at DESC LIMIT 500')
     .bind(user.id,ref.id).all();
   if(!rows.results.length)throw Object.assign(new Error('no_reference_posts'),{status:400});
   return {mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:localAI.analysisPrompt(ref,rows.results)};
@@ -410,6 +410,11 @@ async function scheduleDraft(request,env,user,id){
 async function buildWeekPack(env,user,account,count){
   count=Math.min(21,Math.max(1,Number(count)||Number(account.posting_frequency)||7));
   const refs=await env.DB.prepare('SELECT username,summary,fetched_at FROM refs WHERE owner_id=? ORDER BY fetched_at DESC LIMIT 8').bind(user.id).all();
+  const referencePosts=await env.DB.prepare(`SELECT username,text,posted_at FROM (
+      SELECT r.username,p.text,p.posted_at,ROW_NUMBER() OVER(PARTITION BY p.ref_id ORDER BY p.posted_at DESC) AS rn
+      FROM ref_posts p JOIN refs r ON r.id=p.ref_id AND r.owner_id=p.owner_id
+      WHERE p.owner_id=?
+    ) WHERE rn<=50 ORDER BY rn,posted_at DESC LIMIT 400`).bind(user.id).all();
   const history=await env.DB.prepare('SELECT text FROM drafts WHERE owner_id=? AND account_id=? ORDER BY created_at DESC LIMIT 30').bind(user.id,account.id).all();
   const interval=Math.min(365,Math.max(1,Number(account.activity_interval_days)||1));
   const future=await env.DB.prepare(`SELECT scheduled_at FROM drafts WHERE owner_id=? AND account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL`)
@@ -417,7 +422,7 @@ async function buildWeekPack(env,user,account,count){
   const futureTimes=future.results.map(x=>new Date(x.scheduled_at).getTime()).filter(t=>Number.isFinite(t)&&t>Date.now());
   const latest=futureTimes.length?Math.max(...futureTimes):null;
   const seed=latest?new Date(latest+(interval-1)*86400000).toISOString():new Date().toISOString();
-  const pack=localAI.weekPrompt(account,refs.results,history.results,seed,count);
+  const pack=localAI.weekPrompt(account,refs.results,history.results,seed,count,referencePosts.results);
   return {mode:'device_grok',kind:'weekly',account_id:account.id,count,prompt:pack.prompt,dates:pack.dates};
 }
 async function importWeekPack(env,user,account,input,dates,count){
