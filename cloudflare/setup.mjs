@@ -10,6 +10,8 @@ const configPath=join(here,'wrangler.toml');
 const urlPath=join(here,'.setup-url');
 const wrangler=['--yes','wrangler@4'];
 const doctor=process.argv.includes('--doctor');
+const egressUrl=String(process.env.X_EGRESS_URL||'').trim();
+const egressToken=String(process.env.X_EGRESS_TOKEN||'');
 const nodeMajor=Number(process.versions.node.split('.')[0]);
 if(!Number.isInteger(nodeMajor)||nodeMajor<24){
  console.error('[X-Nekama] Node.js 24以上が必要です。現在: '+process.versions.node);
@@ -109,7 +111,7 @@ async function ensureQueue(name){
  const created=await run(['queues','create',name],{allowFailure:true});
  if(created.code!==0&&!/already|exists|created/i.test(created.all))throw Object.assign(new Error(`Queue作成失敗: ${name}`),{result:created});
 }
-function renderConfig({worker,dbName,dbId,bucket,queue,dlq}){
+function renderConfig({worker,dbName,dbId,bucket,queue,dlq,egressUrl}){
  return `name = "${worker}"
 main = "src/index.mjs"
 compatibility_date = "2026-09-27"
@@ -146,6 +148,9 @@ max_concurrency = 4
 [triggers]
 crons = ["* * * * *"]
 
+[vars]
+X_EGRESS_URL = "${egressUrl.replace(/\\/g,'\\\\').replace(/"/g,'\\\"')}"
+
 `;
 }
 async function copyText(text){
@@ -165,6 +170,21 @@ async function copyText(text){
  }
  return false;
 }
+function requireEgressConfig(){
+ if(!egressUrl)throw new Error('X_EGRESS_URL が必要です。WARP接続済みegressの https://.../fetch を設定してください');
+ if(egressToken.length<24)throw new Error('X_EGRESS_TOKEN は24文字以上で設定し、egress側と同じ値を使ってください');
+ const parsed=new URL(egressUrl);
+ if(parsed.protocol!=='https:')throw new Error('X_EGRESS_URL はHTTPSで公開してください');
+ return {url:parsed.toString(),token:egressToken};
+}
+async function egressHealth(url,token){
+ const healthUrl=new URL(url);
+ healthUrl.pathname=healthUrl.pathname.replace(/\/fetch\/?$/,'/healthz');
+ const response=await fetch(healthUrl,{headers:{'x-xnekama-egress-token':token,'accept':'application/json'}});
+ if(!response.ok)throw new Error(`VPN egressがWARP接続済みとして応答しません: HTTP ${response.status}`);
+ const data=await response.json().catch(()=>({}));
+ if(data.warp!=='verified')throw new Error('VPN egressでWARPを確認できません');
+}
 async function health(url){
  const response=await fetch(url+'/api/auth',{headers:{accept:'application/json'}});
  if(!response.ok)throw new Error(`公開URLの疎通確認に失敗しました: HTTP ${response.status}`);
@@ -180,11 +200,15 @@ async function doctorRun(){
  const bucket=config.match(/bucket_name\s*=\s*"([^"]+)"/)?.[1];
  const queue=config.match(/\nqueue\s*=\s*"([^"]+)"/)?.[1];
  const baseUrl=existsSync(urlPath)?(await readFile(urlPath,'utf8')).trim():'';
- if(!db||!bucket||!queue||!baseUrl)throw new Error('設定が不完全です。先に node setup.mjs を実行してください');
+ const configuredEgress=config.match(/X_EGRESS_URL\s*=\s*"([^"]+)"/)?.[1];
+ if(!db||!bucket||!queue||!baseUrl||!configuredEgress)throw new Error('設定が不完全です。先に node setup.mjs を実行してください');
  await run(['d1','info',db,'--json'],{quiet:true});
  await run(['r2','bucket','info',bucket,'--json'],{quiet:true});
  const queues=await run(['queues','list'],{quiet:true});
  if(!queues.all.includes(queue))throw new Error('Queueが見つかりません');
+ const secrets=await run(['secret','list','--config',configPath],{quiet:true});
+ if(!secrets.all.includes('X_EGRESS_TOKEN'))throw new Error('X_EGRESS_TOKEN Secretが見つかりません');
+ if(egressToken.length>=24)await egressHealth(configuredEgress,egressToken);
  await health(baseUrl);
  note(`OK: ${baseUrl}`);
 }
@@ -192,6 +216,10 @@ async function main(){
  await loadExisting();
  if(doctor)return doctorRun();
  note('Cloudflare完全自動セットアップを開始');
+ const egress=requireEgressConfig();
+ note('VPN egressのWARP接続を確認');
+ await egressHealth(egress.url,egress.token);
+
  const identity=await ensureLogin();
  const accountName=identity?.accounts?.[0]?.name||identity?.account?.name||'Cloudflare';
  note(`ログイン確認: ${accountName}`);
@@ -208,7 +236,9 @@ async function main(){
  await ensureQueue(queue);
  await ensureQueue(dlq);
 
- await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq}));
+ await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq,egressUrl:egress.url}));
+ note('VPN egress認証Secretを設定');
+ await run(['secret','put','X_EGRESS_TOKEN','--config',configPath],{input:egress.token+'\n',quiet:true});
  note('D1 migrationを適用');
  await run(['d1','migrations','apply',dbName,'--remote','--config',configPath]);
 
@@ -228,7 +258,7 @@ ${copied?'\nURLをクリップボードへコピーしました。':''}
 
 このURLを改造Xの「✦ Nekama → Core URLを設定」へ入力してください。
 
-暗号鍵はWorkerがprivate R2内部に自動生成します。ユーザーがSecretを作る必要はありません。
+Xセッション暗号鍵はWorkerがprivate R2内部に自動生成します。X_EGRESS_TOKENだけはVPN egressとの共有Secretとして必要です。
 
 再診断:
   node setup.mjs --doctor
