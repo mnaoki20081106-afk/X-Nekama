@@ -1,6 +1,6 @@
 import http from 'node:http';
 import {timingSafeEqual} from 'node:crypto';
-import {createVerifiedEgressFetch,probeWarp} from './egress.mjs';
+import {createVerifiedEgressFetch,isAllowedXTarget,probeWarp} from './egress.mjs';
 
 const host=process.env.X_EGRESS_HOST||'127.0.0.1';
 const port=Number(process.env.X_EGRESS_PORT||8788);
@@ -9,12 +9,6 @@ const maxBody=Number(process.env.X_EGRESS_MAX_BODY||12*1024*1024);
 if(token.length<24)throw new Error('X_EGRESS_TOKEN must be at least 24 characters');
 
 const verifiedFetch=createVerifiedEgressFetch({fetchImpl:globalThis.fetch});
-const allowedHost=hostname=>{
-  const h=String(hostname||'').toLowerCase();
-  return h==='x.com'||h.endsWith('.x.com')||
-    h==='twitter.com'||h.endsWith('.twitter.com')||
-    h==='twimg.com'||h.endsWith('.twimg.com');
-};
 const sameToken=value=>{
   const a=Buffer.from(String(value||'')),b=Buffer.from(token);
   return a.length===b.length&&timingSafeEqual(a,b);
@@ -68,7 +62,7 @@ const server=http.createServer(async(req,res)=>{
     const rawTarget=String(req.headers['x-xnekama-target']||'');
     let target;
     try{target=new URL(rawTarget)}catch{return json(res,400,{error:'bad_target'})}
-    if(target.protocol!=='https:'||!allowedHost(target.hostname))return json(res,403,{error:'target_not_allowed'});
+    if(!isAllowedXTarget(target))return json(res,403,{error:'target_not_allowed'});
 
     const method=String(req.method||'GET').toUpperCase();
     const body=['GET','HEAD'].includes(method)?undefined:await readBody(req);
