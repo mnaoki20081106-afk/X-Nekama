@@ -19,8 +19,7 @@ export async function probeWarp(fetchImpl=globalThis.fetch){
   try{
     const response=await fetchImpl(TRACE_URL,{
       method:'GET',
-      headers:{accept:'text/plain'},
-      cache:'no-store',
+      headers:{accept:'text/plain','cache-control':'no-cache'},
       redirect:'error'
     });
     const text=await response.text();
