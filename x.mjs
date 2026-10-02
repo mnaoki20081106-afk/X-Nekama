@@ -7,7 +7,7 @@ import {postTweet} from './vendor/xactions/src/scrapers/twitter/http/actions.js'
 import {uploadImage} from './vendor/xactions/src/scrapers/twitter/http/media.js';
 import {readFile} from 'node:fs/promises';
 
-function stageError(error,stage){if(error&&typeof error==='object'){error.deliveryStage=stage;return error}const wrapped=new Error(String(error));wrapped.deliveryStage=stage;return wrapped}
+function stageError(error,stage){if(error&&typeof error==='object'){if(!error.deliveryStage)error.deliveryStage=stage;return error}const wrapped=new Error(String(error));wrapped.deliveryStage=stage;return wrapped}
 function authFor(transport={}){return new TwitterAuth(transport.fetch?{fetch:transport.fetch}:{})}
 function clientFor(cookies,transport={}){
  const options={cookies,rateLimitStrategy:'error'};
