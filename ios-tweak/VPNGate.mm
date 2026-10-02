@@ -21,6 +21,18 @@ BOOL NXVPNReady(void) {
 }
 static const void *NXVPNCoverKey=&NXVPNCoverKey;
 static NSMutableSet *NXVPNHooked;
+static NSHashTable<NSURLSessionTask *> *NXVPNPending;
+static void NXVPNResumePending(void) {
+    NSArray<NSURLSessionTask *> *tasks;
+    @synchronized(NXVPNPending) {
+        tasks=NXVPNPending.allObjects;
+        [NXVPNPending removeAllObjects];
+    }
+    for (NSURLSessionTask *task in tasks) {
+        if (task.state==NSURLSessionTaskStateCanceling || task.state==NSURLSessionTaskStateCompleted) continue;
+        [task resume]; // The guard re-checks WARP and calls the original IMP only when ready.
+    }
+}
 static BOOL NXVPNProbeTask(NSURLSessionTask *task) {
     NSURL *url=task.originalRequest.URL;
     return [task.taskDescription isEqualToString:@"X-Nekama private VPN probe"] &&
@@ -36,7 +48,11 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
             for (unsigned int i=0;i<count;i++) if (method_getName(methods[i])==@selector(resume)) {
                 Method method=methods[i]; IMP original=method_getImplementation(method);
                 IMP guarded=imp_implementationWithBlock(^(NSURLSessionTask *value){
-                    if (!NXVPNProbeTask(value) && !NXVPNReady()) { [value cancel]; return; }
+                    if (!NXVPNProbeTask(value) && !NXVPNReady()) {
+                        @synchronized(NXVPNPending) { [NXVPNPending addObject:value]; }
+                        return;
+                    }
+                    @synchronized(NXVPNPending) { [NXVPNPending removeObject:value]; }
                     ((void(*)(id,SEL))original)(value,@selector(resume));
                 });
                 method_setImplementation(method,guarded); break;
@@ -117,7 +133,7 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
         if ([scene isKindOfClass:UIWindowScene.class]) [self cover:(UIWindowScene *)scene].hidden=!locked;
 }
 - (void)refresh {
-    BOOL ready=NXVPNReady(); [self showCovers:!ready];
+    BOOL ready=NXVPNReady(); [self showCovers:!ready]; if (ready) NXVPNResumePending();
     if (UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
     if (self.busy || (self.lastProbe && -self.lastProbe.timeIntervalSinceNow<2)) return;
     self.lastProbe=NSDate.date; self.busy=YES;
@@ -141,6 +157,7 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
 @end
 void NXVPNInstall(void) {
     NXVPNHooked=[NSMutableSet set];
+    NXVPNPending=[NSHashTable weakObjectsHashTable];
     NXVPNGuardTask([NSURLSession.sharedSession dataTaskWithURL:[NSURL URLWithString:@"https://www.cloudflare.com/cdn-cgi/trace"]]);
     // Cover new windows before they become visible, including cold launch.
     Method method=class_getInstanceMethod(UIWindow.class,@selector(setHidden:)); IMP original=method_getImplementation(method);
