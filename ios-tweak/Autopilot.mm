@@ -1,4 +1,5 @@
 #import "Autopilot.h"
+#import "VPNGate.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -94,17 +95,6 @@ static NSString *NXBottomCursor(id root) {
     return cursor;
 }
 
-static BOOL NXTunnelPresent(void) {
-    struct ifaddrs *addresses = NULL;
-    BOOL found = NO;
-    if (getifaddrs(&addresses) != 0) return NO;
-    for (struct ifaddrs *a = addresses; a; a = a->ifa_next) {
-        if (a->ifa_name && a->ifa_addr && (a->ifa_flags & IFF_UP) && strncmp(a->ifa_name, "utun", 4) == 0) { found = YES; break; }
-    }
-    freeifaddrs(addresses);
-    return found;
-}
-
 @interface NXAutopilot : NSObject
 @property(nonatomic, weak) UIViewController *composer;
 @property(nonatomic, strong) id account;
@@ -119,10 +109,7 @@ static BOOL NXTunnelPresent(void) {
 @property(nonatomic, copy) NSString *pendingText;
 @property(nonatomic, strong) NSDate *generationStarted;
 @property(nonatomic, strong) NSDate *submissionStarted;
-@property(nonatomic, strong) NSDate *warpVerifiedAt;
-@property(nonatomic, strong) NSDate *warpCheckedAt;
 @property(nonatomic, copy) NSString *message;
-@property(nonatomic) BOOL warpCheckBusy;
 @property(nonatomic) BOOL collecting;
 @property(nonatomic) BOOL pageBusy;
 @property(nonatomic) BOOL generating;
@@ -183,6 +170,7 @@ static NSURLSessionDataTask *NXDataTask(id self, SEL cmd, NSURLRequest *request,
         NXObserve(weakTask, data, error);
         if (completion) completion(data, response, error);
     });
+    NXVPNGuardTask(task);
     weakTask = task;
     return task;
 }
@@ -237,23 +225,8 @@ static void NXComposeCall(const void *string, const void *style, const void *mod
            dlsym(RTLD_DEFAULT, "$s4Grok0A16ComposeViewModelC05startB012originalText5styleySS_AA0aB5StyleVtF") != NULL;
 }
 - (BOOL)accountMatches { return self.account && [NXString(NXGet(self.account,@"accountID")) isEqualToString:NXString(self.state[@"account_id"])]; }
-- (BOOL)warpReady {
-    return ![self.state[@"require_warp"] boolValue] || (NXTunnelPresent() && self.warpVerifiedAt && -self.warpVerifiedAt.timeIntervalSinceNow < 5);
-}
-- (void)checkWarp {
-    if (self.warpCheckBusy || (self.warpCheckedAt && -self.warpCheckedAt.timeIntervalSinceNow < 3)) return;
-    self.warpCheckedAt = NSDate.date; self.warpCheckBusy = YES;
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration]; NXHookSession(session);
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://www.cloudflare.com/cdn-cgi/trace"] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:5];
-    [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSString *trace = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"";
-        BOOL warp = [trace containsString:@"\nwarp=on\n"] || [trace containsString:@"\nwarp=plus\n"];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.warpCheckBusy = NO;
-            self.warpVerifiedAt = !error && warp && NXTunnelPresent() ? NSDate.date : nil;
-        }); [session finishTasksAndInvalidate];
-    }] resume];
-}
+- (BOOL)warpReady { return NXVPNReady(); }
+- (void)checkWarp { /* The mandatory global gate owns connection verification. */ }
 - (void)background {
     self.running = NO; self.collecting = NO;
     self.message = self.submissionStarted ? @"バックグラウンドへ移行。送信結果を確認中。" : @"バックグラウンドへ移行したため停止しました。";
@@ -552,6 +525,7 @@ void NXAutopilotSetComposer(UIViewController *composer) {
 }
 void NXAutopilotOpen(UIViewController *presenter) { [[NXAutopilot shared] open:presenter]; }
 void NXAutopilotInstall(void) {
+    NXVPNInstall();
     NXFactoryIMPs=[NSMutableDictionary dictionary];
     Method factory=class_getClassMethod(NSURLSession.class,@selector(sessionWithConfiguration:delegate:delegateQueue:));
     NXOriginalSessionFactory=method_setImplementation(factory,(IMP)NXSessionFactory);

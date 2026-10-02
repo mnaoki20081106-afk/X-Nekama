@@ -56,6 +56,11 @@ jobs:
           swiftc -module-name Grok ios-tweak/NativeGrok.swift ios-tweak/tests/NativeGrokTests.swift -o /tmp/native-grok-tests
           /tmp/native-grok-tests
 
+      - name: Test VPN gate policy
+        run: |
+          c++ -std=c++11 ios-tweak/tests/VPNPolicyTests.cpp -o /tmp/vpn-policy-tests
+          /tmp/vpn-policy-tests
+
       - name: Upload tweak package
         uses: actions/upload-artifact@v4
         with:
