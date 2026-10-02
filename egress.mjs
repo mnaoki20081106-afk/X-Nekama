@@ -6,6 +6,7 @@ export class VpnEgressError extends Error{
     this.name='VpnEgressError';
     this.code='VPN_REQUIRED';
     this.status=503;
+    this.deliveryStage='preflight';
   }
 }
 
@@ -56,11 +57,15 @@ export function createRemoteEgressFetch({endpoint,token,fetchImpl=globalThis.fet
     headers.set('x-xnekama-egress-token',secret);
     headers.set('x-xnekama-redirect',original.redirect||'follow');
     const body=['GET','HEAD'].includes(original.method)?undefined:await original.arrayBuffer();
-    return fetchImpl(url,{
+    const response=await fetchImpl(url,{
       method:original.method,
       headers,
       body,
       redirect:'manual'
     });
+    if(response.headers.get('x-xnekama-egress-error')==='VPN_REQUIRED'){
+      throw new VpnEgressError();
+    }
+    return response;
   };
 }
