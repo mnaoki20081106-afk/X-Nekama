@@ -35,5 +35,6 @@ max_concurrency = 1
 crons = ["* * * * *"]
 
 [vars]
+X_EGRESS_URL = "https://vpn-egress.example.com/fetch"
 PUBLIC_BASE_URL = "https://example.com"
 
