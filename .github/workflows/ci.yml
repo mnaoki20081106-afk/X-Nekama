@@ -12,6 +12,9 @@ jobs:
           node-version: '24'
       - run: npm test
       - run: node --check server.mjs
+      - run: node --check x.mjs
+      - run: node --check egress.mjs
+      - run: node --check vpn-egress.mjs
       - run: node --check public/app.js
       - run: node --check cloudflare/src/index.mjs
       - run: node --check cloudflare/setup.mjs
