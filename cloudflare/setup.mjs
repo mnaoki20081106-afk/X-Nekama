@@ -237,14 +237,14 @@ async function main(){
  await ensureQueue(dlq);
 
  await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq,egressUrl:egress.url}));
- note('VPN egress認証Secretを設定');
- await run(['secret','put','X_EGRESS_TOKEN','--config',configPath],{input:egress.token+'\n',quiet:true});
  note('D1 migrationを適用');
  await run(['d1','migrations','apply',dbName,'--remote','--config',configPath]);
 
- note('Workerをデプロイ');
+ note('Workerを初回デプロイ');
  const deployed=await run(['deploy','--config',configPath]);
  const url=workerUrl(deployed.all);
+ note('VPN egress認証Secretを設定');
+ await run(['secret','put','X_EGRESS_TOKEN','--config',configPath],{input:egress.token+'\n',quiet:true});
  if(!url)throw new Error('Workers公開URLを自動取得できませんでした。deploy出力を確認してください');
  await writeFile(urlPath,url+'\n');
 
