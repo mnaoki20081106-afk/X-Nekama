@@ -1,6 +1,12 @@
 .git
 .env
+.env.*
 data
 node_modules
-test
+cloudflare/node_modules
+**/.wrangler*
+ios-tweak/.theos
+ios-tweak/packages
+*.ipa
+*.deb
 *.log

@@ -1,6 +1,7 @@
 import http from 'node:http';
 import {timingSafeEqual} from 'node:crypto';
 import {createVerifiedEgressFetch,probeWarp} from './egress.mjs';
+import {serverVPN} from './vpn.mjs';
 
 const host=process.env.X_EGRESS_HOST||'127.0.0.1';
 const port=Number(process.env.X_EGRESS_PORT||8788);
@@ -8,7 +9,8 @@ const token=String(process.env.X_EGRESS_TOKEN||'');
 const maxBody=Number(process.env.X_EGRESS_MAX_BODY||12*1024*1024);
 if(token.length<24)throw new Error('X_EGRESS_TOKEN must be at least 24 characters');
 
-const verifiedFetch=createVerifiedEgressFetch({fetchImpl:globalThis.fetch});
+const transport=process.env.X_VPN_MODE==='gluetun'?serverVPN.fetch:globalThis.fetch;
+const verifiedFetch=createVerifiedEgressFetch({fetchImpl:transport});
 const allowedHost=hostname=>{
   const h=String(hostname||'').toLowerCase();
   return h==='x.com'||h.endsWith('.x.com')||
@@ -60,7 +62,7 @@ const server=http.createServer(async(req,res)=>{
     const local=new URL(req.url||'/','http://localhost');
     if(!sameToken(req.headers['x-xnekama-egress-token']))return json(res,401,{error:'unauthorized'});
     if(local.pathname==='/healthz'&&req.method==='GET'){
-      const status=await probeWarp(globalThis.fetch);
+      const status=await probeWarp(transport);
       return json(res,status.ready?200:503,{ok:status.ready,warp:status.ready?'verified':'unavailable'});
     }
     if(local.pathname!=='/fetch')return json(res,404,{error:'not_found'});

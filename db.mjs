@@ -68,3 +68,11 @@ export const row=(sql,...args)=>db.prepare(sql).get(...args);
 export const all=(sql,...args)=>db.prepare(sql).all(...args);
 export const run=(sql,...args)=>db.prepare(sql).run(...args);
 export const publicAccount=(a)=>a&&Object.fromEntries(Object.entries(a).filter(([k])=>k!=='session_cipher'));
+
+if(!accountColumns().some(c=>c.name==='custom_instructions'))db.exec("ALTER TABLE accounts ADD COLUMN custom_instructions TEXT DEFAULT ''");
+if(!accountColumns().some(c=>c.name==='reference_ids'))db.exec("ALTER TABLE accounts ADD COLUMN reference_ids TEXT DEFAULT '[]'");
+// Previous imports persisted JST offsets; SQL compares queue timestamps as text.
+for(const draft of all('SELECT id,scheduled_at FROM drafts WHERE scheduled_at IS NOT NULL')){
+ const date=new Date(draft.scheduled_at);
+ if(Number.isFinite(date.getTime())&&date.toISOString()!==draft.scheduled_at)run('UPDATE drafts SET scheduled_at=? WHERE id=?',date.toISOString(),draft.id);
+}

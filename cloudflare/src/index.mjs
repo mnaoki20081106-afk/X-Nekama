@@ -237,6 +237,15 @@ async function audit(env,ownerId,kind,objectId=null){
   await env.DB.prepare('INSERT INTO audit_events(id,owner_id,kind,object_id) VALUES(?,?,?,?)').bind(uid(),ownerId||null,kind,objectId).run();
 }
 
+async function gatewayState(env){
+ try{
+  if(!env.X_EGRESS_URL||String(env.X_EGRESS_TOKEN||'').length<24)throw Error('サーバーVPNゲートウェイが未設定です。');
+  const url=new URL(env.X_EGRESS_URL);url.pathname=url.pathname.replace(/\/fetch\/?$/,'/healthz');
+  const r=await fetch(url,{headers:{'x-xnekama-egress-token':env.X_EGRESS_TOKEN},redirect:'error',signal:AbortSignal.timeout(3000)});
+  const data=await r.json();if(r.status!==200||data.ok!==true||data.warp!=='verified')throw Error('サーバーVPN復旧待ちです。');
+  return {required:true,connected:true,message:'サーバーWARP接続済み'};
+ }catch(e){return {required:true,connected:false,message:e.message||'VPN接続を確認できません。'}}
+}
 async function stateResponse(env,user){
   const [accounts,refs,assets,drafts,jobs]=await Promise.all([
     env.DB.prepare('SELECT * FROM accounts WHERE owner_id=? ORDER BY created_at DESC').bind(user.id).all(),
@@ -254,13 +263,19 @@ async function stateResponse(env,user){
     jobs:jobs.results,
     configured:true,
     generation_mode:'device_grok',
-    auth_mode:'x_session'
+    auth_mode:'x_session',server_vpn:await gatewayState(env),scheduler_mode:'server_vpn'
   });
 }
-const accountFields=new Set(['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images']);
+const accountFields=new Set(['custom_instructions','reference_ids','display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images']);
 async function patchAccount(request,env,user,id){
   const current=await ownedAccount(env,user.id,id),body=await readJson(request,65536),values={};
   for(const [key,value] of Object.entries(body))if(accountFields.has(key))values[key]=value;
+  if('custom_instructions'in values&&(typeof values.custom_instructions!=='string'||values.custom_instructions.length>8000))return problem(400,'カスタム指示は8000文字以内にしてください');
+  if('reference_ids'in values){
+   if(!Array.isArray(values.reference_ids)||values.reference_ids.length>8)return problem(400,'お手本は8件まで選択してください');
+   for(const id of values.reference_ids)if(typeof id!=='string'||!await env.DB.prepare('SELECT id FROM refs WHERE id=? AND owner_id=?').bind(id,user.id).first())return problem(400,'登録済みのお手本を選択してください');
+   values.reference_ids=JSON.stringify([...new Set(values.reference_ids)]);
+  }
   for(const key of ['enabled','auto_approve'])if(key in values)values[key]=values[key]===true?1:0;
   if('auto_generate_images'in values){if(values.auto_generate_images===true)return problem(400,'画像生成は端末のX/Grokで行います');values.auto_generate_images=0;}
   if('activity_interval_days'in values){
@@ -409,7 +424,13 @@ async function scheduleDraft(request,env,user,id){
 }
 async function buildWeekPack(env,user,account,count){
   count=Math.min(21,Math.max(1,Number(count)||Number(account.posting_frequency)||7));
-  const refs=await env.DB.prepare('SELECT username,summary,fetched_at FROM refs WHERE owner_id=? ORDER BY fetched_at DESC LIMIT 8').bind(user.id).all();
+  const refs=[];
+  for(const id of JSON.parse(account.reference_ids||'[]')){
+   const ref=await env.DB.prepare('SELECT id,username,summary FROM refs WHERE id=? AND owner_id=?').bind(id,user.id).first();
+   if(!ref)continue;
+   const posts=await env.DB.prepare('SELECT text,posted_at FROM ref_posts WHERE ref_id=? AND owner_id=? ORDER BY posted_at DESC LIMIT 30').bind(id,user.id).all();
+   refs.push({...ref,posts:posts.results});
+  }
   const history=await env.DB.prepare('SELECT text FROM drafts WHERE owner_id=? AND account_id=? ORDER BY created_at DESC LIMIT 30').bind(user.id,account.id).all();
   const interval=Math.min(365,Math.max(1,Number(account.activity_interval_days)||1));
   const future=await env.DB.prepare(`SELECT scheduled_at FROM drafts WHERE owner_id=? AND account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL`)
@@ -417,7 +438,7 @@ async function buildWeekPack(env,user,account,count){
   const futureTimes=future.results.map(x=>new Date(x.scheduled_at).getTime()).filter(t=>Number.isFinite(t)&&t>Date.now());
   const latest=futureTimes.length?Math.max(...futureTimes):null;
   const seed=latest?new Date(latest+(interval-1)*86400000).toISOString():new Date().toISOString();
-  const pack=localAI.weekPrompt(account,refs.results,history.results,seed,count);
+  const pack=localAI.weekPrompt(account,refs,history.results,seed,count);
   return {mode:'device_grok',kind:'weekly',account_id:account.id,count,prompt:pack.prompt,dates:pack.dates};
 }
 async function importWeekPack(env,user,account,input,dates,count){

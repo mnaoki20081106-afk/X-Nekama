@@ -524,6 +524,7 @@ void NXAutopilotSetComposer(UIViewController *composer) {
     engine.account=account;
 }
 void NXAutopilotOpen(UIViewController *presenter) { [[NXAutopilot shared] open:presenter]; }
+void NXAutopilotPauseForServer(void) { [[NXAutopilot shared] background]; [[NXAutopilot shared] pause:@"サーバーの予約管理へ切り替えました。端末の自動投稿は停止中です。"]; }
 void NXAutopilotInstall(void) {
     NXVPNInstall();
     NXFactoryIMPs=[NSMutableDictionary dictionary];

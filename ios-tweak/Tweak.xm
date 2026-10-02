@@ -235,7 +235,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     if (!trimmed.length) return nil;
     NSURLComponents *components = [NSURLComponents componentsWithString:trimmed];
     NSString *scheme = components.scheme.lowercaseString;
-    if (!components.host.length || !([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"])) {
+    if (!components.host.length || ![scheme isEqualToString:@"https"] || components.user.length || components.password.length) {
         return nil;
     }
     return components.URL;
@@ -269,7 +269,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
         if (!url) {
             UIAlertController *error =
                 [UIAlertController alertControllerWithTitle:@"URLを確認してください"
-                                                    message:@"http:// または https:// から始まるURLを入力してください。"
+                                                    message:@"https:// から始まる管理画面のURLを入力してください。"
                                              preferredStyle:UIAlertControllerStyleAlert];
             [error addAction:[UIAlertAction actionWithTitle:@"OK"
                                                       style:UIAlertActionStyleDefault
@@ -293,7 +293,10 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
         return;
     }
 
-    SFSafariViewController *browser = [[SFSafariViewController alloc] initWithURL:url];
+    NXAutopilotPauseForServer();
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    components.fragment = @"calendar";
+    SFSafariViewController *browser = [[SFSafariViewController alloc] initWithURL:components.URL];
     browser.modalPresentationStyle = UIModalPresentationPageSheet;
     [presenter presentViewController:browser animated:YES completion:nil];
 }
@@ -376,16 +379,16 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     if (!presenter) return;
     UIAlertController *menu =
         [UIAlertController alertControllerWithTitle:@"Nekama"
-                                            message:@"文章中心。内蔵Grokを利用し、参考投稿の傾向からオリジナルの投稿を作ります。"
+                                            message:@"予約日時・お手本・口調・絵文字は投稿予約の管理画面から設定できます。"
                                      preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"文章中心の自動運用"
+    [menu addAction:[UIAlertAction actionWithTitle:@"端末で文章を生成・運用（前面のみ）"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         NXAutopilotOpen(NXPresenter(self.composer));
     }]];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"X-Nekama Coreを開く"
+    [menu addAction:[UIAlertAction actionWithTitle:@"投稿予約・カレンダー・生成設定"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self openCore];

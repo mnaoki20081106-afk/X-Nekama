@@ -1,0 +1,64 @@
+services:
+  vpn:
+    image: qmcgaw/gluetun:v3.41.0
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun:/dev/net/tun]
+    environment:
+      VPN_SERVICE_PROVIDER: custom
+      VPN_TYPE: wireguard
+      VPN_INTERFACE: tun0
+      WIREGUARD_ENDPOINT_IP: ${WIREGUARD_ENDPOINT_IP:?Set the VPN endpoint IP}
+      WIREGUARD_ENDPOINT_PORT: ${WIREGUARD_ENDPOINT_PORT:-51820}
+      WIREGUARD_PUBLIC_KEY: ${WIREGUARD_PUBLIC_KEY:?Set the VPN public key}
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:?Set the VPN private key}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:?Set the VPN tunnel address}
+      WIREGUARD_PRESHARED_KEY: ${WIREGUARD_PRESHARED_KEY:-}
+      FIREWALL: 'on'
+      FIREWALL_INPUT_PORTS: '3000,8788'
+      HEALTH_SERVER_ADDRESS: 127.0.0.1:9999
+      HTTP_CONTROL_SERVER_ADDRESS: 127.0.0.1:8000
+    ports:
+      - '127.0.0.1:${PORT:-3000}:3000'
+      - '127.0.0.1:8788:8788'
+  app:
+    build: .
+    restart: unless-stopped
+    network_mode: service:vpn
+    depends_on:
+      vpn:
+        condition: service_healthy
+    # Gluetun owns the only network. Never attach a second network or give
+    # this application NET_ADMIN; it cannot disable Gluetun's kill switch.
+    cap_drop: [NET_ADMIN, NET_RAW]
+    environment:
+      HOST: 0.0.0.0
+      PORT: '3000'
+      DATA_DIR: /app/data
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a management password}
+      APP_SECRET: ${APP_SECRET:?Set a stable random secret of at least 32 characters}
+      X_VPN_MODE: gluetun
+      X_VPN_INTERFACE: tun0
+    volumes:
+      - xnekama-data:/app/data
+  egress:
+    profiles: [gateway]
+    build: .
+    restart: unless-stopped
+    network_mode: service:vpn
+    user: node
+    cap_drop: [ALL]
+    command: [node, vpn-egress.mjs]
+    healthcheck:
+      disable: true
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      X_EGRESS_HOST: 0.0.0.0
+      X_EGRESS_PORT: '8788'
+      X_EGRESS_TOKEN: ${X_EGRESS_TOKEN:-}
+      X_VPN_MODE: gluetun
+      X_VPN_INTERFACE: tun0
+volumes:
+  xnekama-data:

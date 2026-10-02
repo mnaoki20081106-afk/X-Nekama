@@ -20,7 +20,7 @@ export async function probeWarp(fetchImpl=globalThis.fetch){
     const response=await fetchImpl(TRACE_URL,{
       method:'GET',
       headers:{accept:'text/plain','cache-control':'no-cache'},
-      redirect:'error'
+      redirect:'error',signal:AbortSignal.timeout(3000)
     });
     const text=await response.text();
     return {ready:response.status===200&&traceHasWarp(text),status:response.status};
@@ -34,7 +34,8 @@ export function createVerifiedEgressFetch({fetchImpl=globalThis.fetch}={}){
   return async function verifiedEgressFetch(input,init){
     const check=await probeWarp(fetchImpl);
     if(!check.ready)throw new VpnEgressError();
-    return fetchImpl(input,init);
+    const timeout=AbortSignal.timeout(30000);
+    return fetchImpl(input,{...init,signal:init?.signal?AbortSignal.any([init.signal,timeout]):timeout});
   };
 }
 
@@ -60,7 +61,7 @@ export function createRemoteEgressFetch({endpoint,token,fetchImpl=globalThis.fet
       method:original.method,
       headers,
       body,
-      redirect:'manual'
+      redirect:'manual',signal:AbortSignal.any([original.signal,AbortSignal.timeout(30000)])
     });
     if(response.headers.get('x-xnekama-egress-error')==='VPN_REQUIRED'){
       throw new VpnEgressError();
