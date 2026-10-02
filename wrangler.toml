@@ -33,3 +33,6 @@ max_concurrency = 4
 
 [triggers]
 crons = ["* * * * *"]
+
+[vars]
+X_EGRESS_URL = "https://vpn-egress.example.com/fetch"
