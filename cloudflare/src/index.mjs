@@ -1,5 +1,6 @@
 import * as xactions from '../../x.mjs';
 import * as localAI from '../../ai.mjs';
+import {contextReviewReason} from '../../context-policy.mjs';
 import {writeFile,unlink} from 'node:fs/promises';
 import {createRemoteEgressFetch,VpnEgressError} from '../../egress.mjs';
 
@@ -481,6 +482,11 @@ async function buildImagePack(env,user,draft){
 async function publishDraft(env,draft){
   const account=await env.DB.prepare('SELECT * FROM accounts WHERE id=? AND owner_id=?').bind(draft.account_id,draft.owner_id).first();
   if(!account||!account.enabled)throw new Error('account disabled');
+  const contextError=contextReviewReason(draft.text);
+  if(contextError){
+    await env.DB.prepare("UPDATE drafts SET status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_error_kind='context_review',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=? AND status='scheduled'").bind(contextError,draft.id,draft.owner_id).run();
+    return;
+  }
   const claimed=await env.DB.prepare(`UPDATE drafts SET status='publishing',attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND owner_id=? AND status='scheduled'`).bind(draft.id,draft.owner_id).run();
   if(!claimed.meta.changes)return;

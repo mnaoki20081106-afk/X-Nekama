@@ -6,6 +6,7 @@ import {randomBytes,scryptSync,timingSafeEqual,createCipheriv,createDecipheriv,c
 import {db,dataDir,uid,row,all,run,publicAccount} from './db.mjs';
 import * as x from './x.mjs';
 import * as ai from './ai.mjs';
+import {contextReviewReason} from './context-policy.mjs';
 import {serverVPN} from './vpn.mjs';
 import {createVerifiedEgressFetch} from './egress.mjs';
 const xTransport={fetch:process.env.X_VPN_MODE==='gluetun'?serverVPN.fetch:createVerifiedEgressFetch({fetchImpl:serverVPN.fetch})};
@@ -119,6 +120,11 @@ run("UPDATE jobs SET status='failed',detail='サーバー再起動により処�
  for(const d of due){
   const a=requireAccount(d.account_id);
   if(!a.enabled||!a.session_cipher)continue;
+  const contextError=contextReviewReason(d.text);
+  if(contextError){
+   run("UPDATE drafts SET status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_error_kind='context_review',error=?,updated_at=datetime('now') WHERE id=? AND status='scheduled'",contextError,d.id);
+   continue;
+  }
   if(!acquirePublishLock(a.id,d.id))continue;
   let claimed=false;
   try{

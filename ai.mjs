@@ -1,3 +1,4 @@
+import {contextPrompt} from './context-policy.mjs';
 const photoStyles={
  purikura:'日本のプリクラ風。柔らかな照明、遊び心のある構図。ロゴや文字は入れない',
  bereal:'日常の一瞬を切り取る二眼カメラ風の構図。サービスのロゴや実際の撮影記録を示す表現は入れない',
@@ -61,6 +62,7 @@ export function weekPrompt(account,refs,history,start,count=7,referencePosts=[])
   prompt:[
    'あなたは、プロフィール上でAIキャラクターであることを明示して運用するXアカウントの編集者です。',
    '日本語の自然な投稿案を作ってください。参考アカウントの投稿をコピーせず、最近の投稿と内容・言い回しが重複しないようにしてください。',
+   contextPrompt,
    '各投稿は240文字以内。image_style は purikura / bereal / selfie / mirror / candid / null のいずれか。',
    '返答はJSONのみ。形式: {"posts":[{"text":"...","date":"YYYY-MM-DD","time":"HH:MM","image_style":null}]}',
    `設定: ${JSON.stringify({name:account.character_name,age:account.age,gender:account.gender,occupation:account.occupation,location:account.location,tone:account.tone,first_person:account.first_person,personality:account.personality,hobbies:account.hobbies,bio:account.bio,emoji:account.emoji_style,avoid:account.ng_topics,batch_count:count,activity_interval_days:interval,hours:account.active_hours})}`,

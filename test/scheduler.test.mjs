@@ -41,6 +41,10 @@ test('server queue waits for VPN, survives restart, and stops ambiguous replays'
   assert.equal(draft().status,'scheduled');assert.equal(draft().attempt_count,0);
   await stop();await writeFile(mode,'online');await start();
   await waitFor(()=>draft().status==='posted');assert.equal(draft().x_post_id,'1234567890123456789');assert.equal(draft().attempt_count,1);
+  await stop();db.prepare("UPDATE drafts SET status='scheduled',text='今日はいい天気',attempt_count=0,x_post_id=NULL").run();await start();
+  await waitFor(()=>draft().status==='needs_review');assert.equal(draft().last_error_kind,'context_review');assert.equal(draft().attempt_count,0);
+  assert.equal((await readFile(count,'utf8')).trim().split('\n').length,1);
+  await stop();db.prepare("UPDATE drafts SET text='test post',last_error_kind='',error=NULL").run();
   await stop();db.prepare("UPDATE drafts SET status='scheduled',attempt_count=0,x_post_id=NULL").run();await writeFile(mode,'ambiguous');await start();
   await waitFor(()=>draft().status==='failed');assert.equal(draft().last_error_kind,'ambiguous');assert.equal(draft().attempt_count,1);
   await stop();await writeFile(mode,'online');await start();
