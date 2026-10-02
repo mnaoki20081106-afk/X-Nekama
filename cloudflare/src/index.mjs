@@ -378,7 +378,7 @@ async function fetchReferencePosts(env,user,ref,account,requestedLimit){
   return statements.length;
 }
 async function buildAnalysisPack(env,user,ref){
-  const rows=await env.DB.prepare('SELECT text,posted_at,media_json FROM ref_posts WHERE owner_id=? AND ref_id=? ORDER BY posted_at DESC LIMIT 120')
+  const rows=await env.DB.prepare('SELECT text,posted_at,media_json FROM ref_posts WHERE owner_id=? AND ref_id=? ORDER BY posted_at DESC LIMIT 500')
     .bind(user.id,ref.id).all();
   if(!rows.results.length)throw Object.assign(new Error('no_reference_posts'),{status:400});
   return {mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:localAI.analysisPrompt(ref,rows.results)};
@@ -428,7 +428,7 @@ async function buildWeekPack(env,user,account,count){
   for(const id of JSON.parse(account.reference_ids||'[]')){
    const ref=await env.DB.prepare('SELECT id,username,summary FROM refs WHERE id=? AND owner_id=?').bind(id,user.id).first();
    if(!ref)continue;
-   const posts=await env.DB.prepare('SELECT text,posted_at FROM ref_posts WHERE ref_id=? AND owner_id=? ORDER BY posted_at DESC LIMIT 30').bind(id,user.id).all();
+   const posts=await env.DB.prepare('SELECT text,posted_at FROM ref_posts WHERE ref_id=? AND owner_id=? ORDER BY posted_at DESC LIMIT 50').bind(id,user.id).all();
    refs.push({...ref,posts:posts.results});
   }
   const history=await env.DB.prepare('SELECT text FROM drafts WHERE owner_id=? AND account_id=? ORDER BY created_at DESC LIMIT 30').bind(user.id,account.id).all();

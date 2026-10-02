@@ -61,7 +61,7 @@ function imageReferenceAssetsForDraft(d,a){
 }
 function buildWeekPack(a,count){
  const ids=JSON.parse(a.reference_ids||'[]');
- const refs=ids.map(id=>row('SELECT * FROM refs WHERE id=?',id)).filter(Boolean).map(ref=>({...ref,posts:all('SELECT text,posted_at FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 30',ref.id)}));
+ const refs=ids.map(id=>row('SELECT * FROM refs WHERE id=?',id)).filter(Boolean).map(ref=>({...ref,posts:all('SELECT text,posted_at FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 50',ref.id)}));
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
  const interval=Math.min(365,Math.max(1,Number(a.activity_interval_days)||1));
  const futureDates=all("SELECT scheduled_at FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL",a.id)
@@ -184,7 +184,7 @@ const server=http.createServer(async(req,res)=>{try{
  m=path.match(/^\/api\/refs\/([^/]+)\/fetch$/);
  if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const b=await body(req),a=requireAccount(b.account_id);if(!a.session_cipher)fail(400,'取得用のXアカウントを接続してください');const limit=Math.min(5000,Math.max(20,Number(b.limit)||500));const job=addJob(a.id,'fetch',async()=>{const {profile,posts}=await x.collect(decrypt(a.session_cipher),ref.username,limit,xTransport);const insert=db.prepare('INSERT OR REPLACE INTO ref_posts(id,ref_id,text,posted_at,metrics_json,media_json) VALUES(?,?,?,?,?,?)');db.exec('BEGIN');try{for(const p of posts)if(p.id&&p.text)insert.run(p.id,ref.id,p.text,p.createdAt||null,JSON.stringify(p.metrics||{}),JSON.stringify(p.media||[]));run("UPDATE refs SET display_name=?,account_id=?,fetched_at=datetime('now') WHERE id=?",profile.name||ref.username,a.id,ref.id);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return `${posts.length}件取得`});return json(res,202,{job})}
  m=path.match(/^\/api\/refs\/([^/]+)\/analyze$/);
- if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const posts=all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 120',ref.id);if(!posts.length)fail(400,'先に投稿を取得してください');return json(res,200,{mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:ai.analysisPrompt(ref,posts)})}
+ if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const posts=all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 500',ref.id);if(!posts.length)fail(400,'先に投稿を取得してください');return json(res,200,{mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:ai.analysisPrompt(ref,posts)})}
  m=path.match(/^\/api\/refs\/([^/]+)\/analyze\/import$/);
  if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const b=await body(req,65536);let summary;try{summary=ai.parseAnalysisResult(b.result)}catch(e){fail(400,e.message)}run('UPDATE refs SET summary=? WHERE id=?',summary,ref.id);return json(res,200,{ok:true})}
  if(method==='GET'&&path==='/api/ref-posts'){const refId=new URL(req.url,'http://localhost').searchParams.get('ref_id');return json(res,200,{posts:all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 500',refId||'')})}
