@@ -35,7 +35,12 @@ max_concurrency = 4
 crons = ["* * * * *"]
 
 [vars]
+X_EGRESS_URL = "https://vpn-egress.example.com/fetch"
 PUBLIC_BASE_URL = "https://REPLACE_WITH_YOUR_DOMAIN"
+
+# X_EGRESS_TOKEN is shared only with your WARP egress gateway.
+# Set it with:
+#   npx wrangler secret put X_EGRESS_TOKEN
 
 # Secrets are NEVER written here.
 # Set these with:
