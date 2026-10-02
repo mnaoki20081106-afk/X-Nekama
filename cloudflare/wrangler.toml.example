@@ -42,6 +42,6 @@ PUBLIC_BASE_URL = "https://REPLACE_WITH_YOUR_DOMAIN"
 # Set it with:
 #   npx wrangler secret put X_EGRESS_TOKEN
 
-# Secrets are NEVER written here.
-# Set these with:
-#   npx wrangler secret put TOKEN_ENCRYPTION_KEY
+# X_EGRESS_TOKEN is shared only with your WARP egress gateway.
+# Set it with:
+#   npx wrangler secret put X_EGRESS_TOKEN
