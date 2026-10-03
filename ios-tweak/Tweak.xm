@@ -5,6 +5,7 @@
 #import <mach-o/dyld.h>
 #import "Autopilot.h"
 #import "VPNGate.h"
+#import "ServerManager.h"
 #include <string.h>
 
 static const void *kNXButtonKey = &kNXButtonKey;
@@ -16,7 +17,6 @@ static NSMutableSet<NSString *> *NXHookedGrokAttachmentClasses;
 static NSString *NXLastGrokAttachmentEvent;
 static NSString * const NXGrokAttachmentNotification =
     @"com.xnekama.grokImagineAttachmentDidAdd";
-static NSString * const NXCoreURLDefaultsKey = @"x-nekama.core-url";
 
 static NSString *NXClassName(id object) {
     return object ? NSStringFromClass(object_getClass(object)) : @"";
@@ -287,77 +287,8 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     [NXPresenter(self.composer) presentViewController:alert animated:YES completion:nil];
 }
 
-- (NSURL *)validatedCoreURLFromString:(NSString *)value {
-    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (!trimmed.length) return nil;
-    NSURLComponents *components = [NSURLComponents componentsWithString:trimmed];
-    NSString *scheme = components.scheme.lowercaseString;
-    if (!components.host.length || ![scheme isEqualToString:@"https"] || components.user.length || components.password.length) {
-        return nil;
-    }
-    return components.URL;
-}
-
-- (void)configureCoreURL {
-    UIViewController *presenter = NXPresenter(self.composer);
-    if (!presenter) return;
-
-    NSString *current = [NSUserDefaults.standardUserDefaults stringForKey:NXCoreURLDefaultsKey] ?: @"";
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"X-Nekama Core"
-                                            message:@"公開中のX-Nekama管理画面URLを設定してください。"
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"https://your-x-nekama.example";
-        field.text = current;
-        field.keyboardType = UIKeyboardTypeURL;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"キャンセル"
-                                             style:UIAlertActionStyleCancel
-                                           handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存"
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(__unused UIAlertAction *action) {
-        NSString *value = alert.textFields.firstObject.text ?: @"";
-        NSURL *url = [self validatedCoreURLFromString:value];
-        if (!url) {
-            UIAlertController *error =
-                [UIAlertController alertControllerWithTitle:@"URLを確認してください"
-                                                    message:@"https:// から始まる管理画面のURLを入力してください。"
-                                             preferredStyle:UIAlertControllerStyleAlert];
-            [error addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                      style:UIAlertActionStyleDefault
-                                                    handler:nil]];
-            [NXPresenter(self.composer) presentViewController:error animated:YES completion:nil];
-            return;
-        }
-        [NSUserDefaults.standardUserDefaults setObject:url.absoluteString forKey:NXCoreURLDefaultsKey];
-    }]];
-    [presenter presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)openCore {
-    UIViewController *presenter = NXPresenter(self.composer);
-    if (!presenter) return;
-
-    NSString *value = [NSUserDefaults.standardUserDefaults stringForKey:NXCoreURLDefaultsKey];
-    NSURL *url = [self validatedCoreURLFromString:value ?: @""];
-    if (!url) {
-        [self configureCoreURL];
-        return;
-    }
-
-    NXAutopilotPauseForServer();
-    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
-    components.fragment = @"calendar";
-    SFSafariViewController *browser = [[SFSafariViewController alloc] initWithURL:components.URL];
-    browser.modalPresentationStyle = UIModalPresentationPageSheet;
-    [presenter presentViewController:browser animated:YES completion:nil];
-}
-
+- (void)configureCoreURL {NXServerManagerConnect(NXPresenter(self.composer));}
+- (void)openCore {NXAutopilotPauseForServer();NXServerManagerOpen(NXPresenter(self.composer));}
 
 - (void)askForPromptWithTitle:(NSString *)title
                   placeholder:(NSString *)placeholder
@@ -451,7 +382,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
         [self openCore];
     }]];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"Core URLを設定"
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cloudflare連携・接続先"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self configureCoreURL];

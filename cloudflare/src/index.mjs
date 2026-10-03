@@ -2,6 +2,7 @@ import * as xactions from '../../x.mjs';
 import * as localAI from '../../ai.mjs';
 import {contextReviewReason} from '../../context-policy.mjs';
 import {verifiedGateway} from '../../exit-policy.mjs';
+import {instanceInfo} from '../instance-info.mjs';
 import {writeFile,unlink} from 'node:fs/promises';
 import {createRemoteEgressFetch,VpnEgressError} from '../../egress.mjs';
 
@@ -562,6 +563,7 @@ async function queueMessage(env,message){
 }
 async function handleApi(request,env){
   const url=new URL(request.url),path=url.pathname,method=request.method;
+  if(path==='/api/instance'&&method==='GET')return json(instanceInfo(env));
   if((path==='/api/me'||path==='/api/auth')&&method==='GET'){
     const user=await sessionUser(request,env);return json({authenticated:!!user,mode:'x_session',user:user?{username:user.login_username}:null});
   }

@@ -5,6 +5,7 @@ import {existsSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {validExitConfig,verifiedGateway} from '../exit-policy.mjs';
+import {selectCloudflareAccount} from './account-policy.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const configPath=join(here,'wrangler.toml');
@@ -17,6 +18,7 @@ const exitMode=process.env.X_EXIT_MODE||'warp';
 const exitIP=process.env.X_EXIT_IP||'';
 const exitCountry=process.env.X_EXIT_COUNTRY||'JP';
 const nodeMajor=Number(process.versions.node.split('.')[0]);
+let selectedAccountId='';
 if(!Number.isInteger(nodeMajor)||nodeMajor<24){
  console.error('[X-Nekama] Node.js 24以上が必要です。現在: '+process.versions.node);
  process.exit(1);
@@ -26,6 +28,7 @@ function run(args,{allowFailure=false,input=null,quiet=false}={}){
  return new Promise((resolve,reject)=>{
   const child=spawn('npx',[...wrangler,...args],{
    cwd:here,
+   env:{...process.env,...(selectedAccountId?{CLOUDFLARE_ACCOUNT_ID:selectedAccountId}:{})},
    stdio:['pipe','pipe','pipe'],
    shell:process.platform==='win32'
   });
@@ -89,6 +92,13 @@ async function ensureLogin(){
  who=await run(['whoami','--json'],{quiet:true});
  return parseJson(who.out||who.err);
 }
+function pinAccount(identity){
+ const saved=requireText(configPath).match(/^account_id\s*=\s*"([^"]+)"/m)?.[1]||'';
+ const account=selectCloudflareAccount(identity,{requested:process.env.CLOUDFLARE_ACCOUNT_ID||'',saved});
+ selectedAccountId=account.id;
+ note(`配置先: ${account.name||account.id} (${account.id})`);
+ return account;
+}
 async function ensureD1(name){
  let info=await run(['d1','info',name,'--json'],{allowFailure:true,quiet:true});
  if(info.code!==0){
@@ -117,6 +127,7 @@ async function ensureQueue(name){
 }
 function renderConfig({worker,dbName,dbId,bucket,queue,dlq,egressUrl}){
  return `name = "${worker}"
+account_id = "${selectedAccountId}"
 main = "src/index.mjs"
 compatibility_date = "2026-09-27"
 compatibility_flags = ["nodejs_compat"]
@@ -201,7 +212,7 @@ async function health(url){
 }
 async function doctorRun(){
  note('診断モード');
- await ensureLogin();
+ pinAccount(await ensureLogin());
  if(!existsSync(configPath))throw new Error('wrangler.toml がありません。先に node setup.mjs を実行してください');
  const config=await readFile(configPath,'utf8');
  const db=config.match(/database_name\s*=\s*"([^"]+)"/)?.[1];
@@ -230,7 +241,7 @@ async function main(){
  await egressHealth(egress.url,egress.token);
 
  const identity=await ensureLogin();
- const accountName=identity?.accounts?.[0]?.name||identity?.account?.name||'Cloudflare';
+ const accountName=pinAccount(identity).name||'Cloudflare';
  note(`ログイン確認: ${accountName}`);
 
  const id=slug();
@@ -265,7 +276,7 @@ async function main(){
   ${url}
 ${copied?'\nURLをクリップボードへコピーしました。':''}
 
-このURLを改造Xの「✦ Nekama → Core URLを設定」へ入力してください。
+このURLを改造Xの「✦ Nekama → Cloudflare連携・接続先 → 作成済みサーバーに接続」へ入力してください。
 
 Xセッション暗号鍵はWorkerがprivate R2内部に自動生成します。X_EGRESS_TOKENだけはVPN egressとの共有Secretとして必要です。
 

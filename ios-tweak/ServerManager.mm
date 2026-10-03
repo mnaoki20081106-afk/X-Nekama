@@ -4,10 +4,13 @@
 
 static NSString *const NXServerURLKey=@"x-nekama.server-url";
 static UIColor *NXServerBlue(void){return [UIColor colorWithRed:0.114 green:0.608 blue:0.941 alpha:1];}
-@interface NXServerController:UIViewController<WKNavigationDelegate>
+@interface NXServerController:UIViewController<WKNavigationDelegate,NSURLSessionTaskDelegate>
 @property(nonatomic,strong) WKWebView *web;
 @property(nonatomic,strong) NSURL *server;
 @property(nonatomic,strong) UILabel *status;
+@property(nonatomic) BOOL configureOnAppear;
+@property(nonatomic) NSUInteger connectionEpoch;
+@property(nonatomic,strong) NSURLSession *probeSession;
 @end
 @implementation NXServerController
 - (void)viewDidLoad {
@@ -22,21 +25,58 @@ static UIColor *NXServerBlue(void){return [UIColor colorWithRed:0.114 green:0.60
  [NSLayoutConstraint activateConstraints:@[[self.web.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],[self.web.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],[self.web.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],[self.web.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],[self.status.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],[self.status.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:24],[self.status.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-24]]];
  [self load];
 }
-- (void)close{[self.navigationController dismissViewControllerAnimated:YES completion:nil];}
+- (void)cancelVerification{self.connectionEpoch++;[self.probeSession invalidateAndCancel];self.probeSession=nil;}
+- (void)close{[self cancelVerification];[self.navigationController dismissViewControllerAnimated:YES completion:nil];}
+- (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];if(self.configureOnAppear){self.configureOnAppear=NO;[self configure];}}
 - (void)configure{
- UIAlertController *a=[UIAlertController alertControllerWithTitle:@"投稿サーバー" message:@"X-NekamaサーバーのHTTPS URLを入力してください。管理パスワードは次のログイン画面で入力します。" preferredStyle:UIAlertControllerStyleAlert];
- [a addTextFieldWithConfigurationHandler:^(UITextField *field){field.text=[NSUserDefaults.standardUserDefaults stringForKey:NXServerURLKey];field.placeholder=@"https://your-server.example";field.keyboardType=UIKeyboardTypeURL;field.autocapitalizationType=UITextAutocapitalizationTypeNone;}];
+ UIAlertController *a=[UIAlertController alertControllerWithTitle:@"自分のCloudflareサーバー" message:@"Cloudflareの公式画面で自分のアカウントへ配置し、作成したWorkerのURLを連携します。Cloudflareへのログインはブラウザで行います。VPN中継の設定も必要です。" preferredStyle:UIAlertControllerStyleActionSheet];
+ [a addAction:[UIAlertAction actionWithTitle:@"Cloudflareでサーバーを作成" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){
+  NSURL *url=[NSURL URLWithString:@"https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fmnaoki20081106-afk%2FX-Nekama%2Ftree%2Fcodex%2Fserver-calendar-vpn-20261003"];
+  [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+ }]];
+ [a addAction:[UIAlertAction actionWithTitle:@"作成済みサーバーに接続" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){[self enterURL];}]];
+ [a addAction:[UIAlertAction actionWithTitle:@"接続を解除" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action){
+  [self cancelVerification];[self.web stopLoading];self.web.hidden=YES;self.server=nil;[NSUserDefaults.standardUserDefaults removeObjectForKey:NXServerURLKey];[NSUserDefaults.standardUserDefaults removeObjectForKey:@"x-nekama.core-url"];self.status.hidden=NO;self.status.text=@"接続を解除しました。サーバー上のデータと予約は削除されません。";
+ }]];
+ [a addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+ if(a.popoverPresentationController){a.popoverPresentationController.barButtonItem=self.navigationItem.rightBarButtonItem;}
+ [self presentViewController:a animated:YES completion:nil];
+}
+- (void)enterURL{
+ UIAlertController *a=[UIAlertController alertControllerWithTitle:@"サーバーを連携" message:@"自分のCloudflareに作成したWorkerのHTTPS URLを入力してください。接続を確認してから保存します。" preferredStyle:UIAlertControllerStyleAlert];
+ [a addTextFieldWithConfigurationHandler:^(UITextField *field){field.text=[NSUserDefaults.standardUserDefaults stringForKey:NXServerURLKey];field.placeholder=@"https://x-nekama.your-name.workers.dev";field.keyboardType=UIKeyboardTypeURL;field.autocapitalizationType=UITextAutocapitalizationTypeNone;field.autocorrectionType=UITextAutocorrectionTypeNo;}];
  [a addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:nil]];
- [a addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){
+ [a addAction:[UIAlertAction actionWithTitle:@"確認して連携" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){
   NSURLComponents *u=[NSURLComponents componentsWithString:[a.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
   if(![u.scheme.lowercaseString isEqual:@"https"]||!u.host.length||u.user.length||u.password.length){[self message:@"接続先はHTTPS URLで入力してください。" title:@"接続先"];return;}
-  u.path=@"/";u.query=nil;u.fragment=nil;[NSUserDefaults.standardUserDefaults setObject:u.string forKey:NXServerURLKey];[self load];
+  u.path=@"/";u.query=nil;u.fragment=nil;[self verifyServer:u.URL];
  }]];[self presentViewController:a animated:YES completion:nil];
 }
+- (void)verifyServer:(NSURL *)server{
+ if(!NXVPNReady()){[self message:@"VPNの接続確認が必要です。" title:@"サーバー連携"];return;}
+ [self cancelVerification];NSUInteger epoch=self.connectionEpoch;
+ self.status.hidden=NO;self.status.text=@"サーバーの種類を確認しています…";
+ NSURL *probe=[NSURL URLWithString:@"api/instance" relativeToURL:server].absoluteURL;
+ NSURLSessionConfiguration *config=NSURLSessionConfiguration.ephemeralSessionConfiguration;config.HTTPCookieStorage=nil;config.HTTPShouldSetCookies=NO;config.timeoutIntervalForRequest=8;config.timeoutIntervalForResource=10;
+ NSURLSession *session=[NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];self.probeSession=session;
+ NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:probe];[request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+ [[session dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
+  NSDictionary *info=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+  BOOL valid=!error&&[(NSHTTPURLResponse *)response statusCode]==200&&[response.URL.absoluteString isEqual:probe.absoluteString]&&[info isKindOfClass:NSDictionary.class]&&[info[@"product"] isEqual:@"x-nekama"]&&[info[@"protocol_version"] isEqual:@1]&&[info[@"platform"] isEqual:@"cloudflare-workers"];
+  [session finishTasksAndInvalidate];
+  dispatch_async(dispatch_get_main_queue(),^{
+   if(epoch!=self.connectionEpoch)return;self.probeSession=nil;
+   if(!NXVPNReady()||!valid){self.status.text=@"連携できませんでした。URL・デプロイ状態・VPNを確認してください。";[self message:self.status.text title:@"サーバー連携"];return;}
+   [NSUserDefaults.standardUserDefaults setObject:server.absoluteString forKey:NXServerURLKey];[NSUserDefaults.standardUserDefaults setObject:server.absoluteString forKey:@"x-nekama.core-url"];[self load];
+   if(![info[@"vpn_egress_configured"] boolValue])[self message:@"サーバーを連携しました。自動投稿を使う前にCloudflare側のVPN中継URL・認証Secretを設定してください。" title:@"VPN中継が未設定です"];
+  });
+ }] resume];
+}
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler{completionHandler(nil);}
 - (void)load{
- NSString *url=[NSUserDefaults.standardUserDefaults stringForKey:NXServerURLKey];if(!url.length)return;
+ NSString *url=[NSUserDefaults.standardUserDefaults stringForKey:NXServerURLKey] ?: [NSUserDefaults.standardUserDefaults stringForKey:@"x-nekama.core-url"];if(!url.length){self.configureOnAppear=YES;return;}
  if(!NXVPNReady()){self.status.hidden=NO;self.status.text=@"VPNの接続確認が必要です。";return;}
- self.server=[NSURL URLWithString:url];self.status.hidden=NO;self.status.text=@"サーバーに接続しています…";
+ self.server=[NSURL URLWithString:url];self.web.hidden=NO;self.status.hidden=NO;self.status.text=@"サーバーに接続しています…";
  NSURLComponents *u=[NSURLComponents componentsWithURL:self.server resolvingAgainstBaseURL:NO];u.fragment=@"calendar";[self.web loadRequest:[NSURLRequest requestWithURL:u.URL]];
 }
 - (BOOL)sameOrigin:(NSURL *)url{return [url.scheme.lowercaseString isEqual:self.server.scheme.lowercaseString]&&[url.host.lowercaseString isEqual:self.server.host.lowercaseString]&&[(url.port?:@443)isEqual:(self.server.port?:@443)];}
@@ -58,11 +98,14 @@ static UIColor *NXServerBlue(void){return [UIColor colorWithRed:0.114 green:0.60
  [self.web callAsyncJavaScript:[@"return await " stringByAppendingString:script] arguments:@{} inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id result,NSError *error){[self message:error?@"同期できませんでした。":([result isKindOfClass:NSString.class]?result:@"同期結果を確認できません。") title:@"取得済み投稿の同期"]; }];
 }
 @end
-void NXServerManagerOpen(UIViewController *presenter){
+static void NXOpenServerManager(UIViewController *presenter,BOOL configure){
  if(!presenter||presenter.presentedViewController||!NXVPNReady())return;
- UINavigationController *nav=[[UINavigationController alloc]initWithRootViewController:[NXServerController new]];nav.modalPresentationStyle=UIModalPresentationFullScreen;nav.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;nav.view.tintColor=NXServerBlue();
+ NXServerController *controller=[NXServerController new];controller.configureOnAppear=configure;
+ UINavigationController *nav=[[UINavigationController alloc]initWithRootViewController:controller];nav.modalPresentationStyle=UIModalPresentationFullScreen;nav.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;nav.view.tintColor=NXServerBlue();
  [presenter presentViewController:nav animated:YES completion:nil];
 }
+void NXServerManagerOpen(UIViewController *presenter){NXOpenServerManager(presenter,NO);}
+void NXServerManagerConnect(UIViewController *presenter){NXOpenServerManager(presenter,YES);}
 @interface NXServerEntry:NSObject
 @property(nonatomic,strong) NSMapTable *buttons;
 @property(nonatomic,strong) NSTimer *timer;
