@@ -1,6 +1,7 @@
 import * as xactions from '../../x.mjs';
 import * as localAI from '../../ai.mjs';
 import {contextReviewReason} from '../../context-policy.mjs';
+import {verifiedGateway} from '../../exit-policy.mjs';
 import {writeFile,unlink} from 'node:fs/promises';
 import {createRemoteEgressFetch,VpnEgressError} from '../../egress.mjs';
 
@@ -14,7 +15,7 @@ function xTransport(env){
   const endpoint=String(env.X_EGRESS_URL||'').trim();
   const token=String(env.X_EGRESS_TOKEN||'');
   if(!endpoint||token.length<24)throw new VpnEgressError('VPN egress is not configured');
-  return {fetch:createRemoteEgressFetch({endpoint,token})};
+  return {fetch:createRemoteEgressFetch({endpoint,token,exitMode:env.X_EXIT_MODE||'warp',expectedIP:env.X_EXIT_IP||'',expectedCountry:env.X_EXIT_COUNTRY||'JP'})};
 }
 
 const json=(data,status=200,headers={})=>new Response(JSON.stringify(data),{
@@ -243,8 +244,8 @@ async function gatewayState(env){
   if(!env.X_EGRESS_URL||String(env.X_EGRESS_TOKEN||'').length<24)throw Error('サーバーVPNゲートウェイが未設定です。');
   const url=new URL(env.X_EGRESS_URL);url.pathname=url.pathname.replace(/\/fetch\/?$/,'/healthz');
   const r=await fetch(url,{headers:{'x-xnekama-egress-token':env.X_EGRESS_TOKEN},redirect:'error',signal:AbortSignal.timeout(3000)});
-  const data=await r.json();if(r.status!==200||data.ok!==true||data.warp!=='verified')throw Error('サーバーVPN復旧待ちです。');
-  return {required:true,connected:true,message:'サーバーWARP接続済み'};
+  const data=await r.json();if(r.status!==200||!verifiedGateway(data,{mode:env.X_EXIT_MODE||'warp',ip:env.X_EXIT_IP||'',country:env.X_EXIT_COUNTRY||'JP'}))throw Error('サーバーVPNまたは共通出口の確認待ちです。');
+  return {required:true,connected:true,mode:data.mode||'warp',ip:data.ip,country:data.country,message:data.mode==='shared'?`共通VPN出口確認済み (${data.ip} / ${data.country})`:'サーバーWARP接続済み'};
  }catch(e){return {required:true,connected:false,message:e.message||'VPN接続を確認できません。'}}
 }
 async function stateResponse(env,user){

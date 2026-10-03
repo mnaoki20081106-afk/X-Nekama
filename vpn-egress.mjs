@@ -10,7 +10,8 @@ const maxBody=Number(process.env.X_EGRESS_MAX_BODY||12*1024*1024);
 if(token.length<24)throw new Error('X_EGRESS_TOKEN must be at least 24 characters');
 
 const transport=process.env.X_VPN_MODE==='gluetun'?serverVPN.fetch:globalThis.fetch;
-const verifiedFetch=createVerifiedEgressFetch({fetchImpl:transport});
+const shared=process.env.X_EXIT_MODE==='shared';
+const verifiedFetch=shared?serverVPN.fetch:createVerifiedEgressFetch({fetchImpl:transport});
 const sameToken=value=>{
   const a=Buffer.from(String(value||'')),b=Buffer.from(token);
   return a.length===b.length&&timingSafeEqual(a,b);
@@ -56,6 +57,7 @@ const server=http.createServer(async(req,res)=>{
     const local=new URL(req.url||'/','http://localhost');
     if(!sameToken(req.headers['x-xnekama-egress-token']))return json(res,401,{error:'unauthorized'});
     if(local.pathname==='/healthz'&&req.method==='GET'){
+      if(shared){const status=await serverVPN.check();return json(res,status.connected?200:503,{ok:status.connected,mode:'shared',ip:status.ip,country:status.country});}
       const status=await probeWarp(transport);
       return json(res,status.ready?200:503,{ok:status.ready,warp:status.ready?'verified':'unavailable'});
     }
@@ -84,11 +86,11 @@ const server=http.createServer(async(req,res)=>{
   }catch(error){
     const status=Number(error?.status)||502;
     json(res,status,{error:error?.code||'egress_failed',message:String(error?.message||error).slice(0,300)},
-      error?.code==='VPN_REQUIRED'?{'x-xnekama-egress-error':'VPN_REQUIRED'}:{});
+      ['VPN_REQUIRED','VPN_UNAVAILABLE'].includes(error?.code)?{'x-xnekama-egress-error':'VPN_REQUIRED'}:{});
   }
 });
 
 server.listen(port,host,()=>{
   console.log(`X-Nekama VPN egress listening on http://${host}:${port}/fetch`);
-  console.log('X requests are blocked unless the host is verified as WARP-connected.');
+  console.log(shared?'X requests require a healthy VPN with the configured fixed exit IP and country.':'X requests are blocked unless the host is verified as WARP-connected.');
 });

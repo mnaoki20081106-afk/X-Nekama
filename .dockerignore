@@ -10,3 +10,5 @@ ios-tweak/packages
 *.ipa
 *.deb
 *.log
+shared-exit-config
+*.conf

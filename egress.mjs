@@ -1,4 +1,4 @@
-const TRACE_URL='https://www.cloudflare.com/cdn-cgi/trace';
+import {TRACE_URL,validExitConfig,verifiedGateway} from './exit-policy.mjs';
 
 export class VpnEgressError extends Error{
   constructor(message='WARP VPN is not verified'){
@@ -13,7 +13,7 @@ export class VpnEgressError extends Error{
 export function isAllowedXTarget(input){
   try{
     const url=input instanceof URL?input:new URL(String(input));
-    if(url.protocol!=='https:'||(url.port&&url.port!=='443'))return false;
+    if(url.protocol!=='https:'||url.username||url.password||(url.port&&url.port!=='443'))return false;
     const h=url.hostname.toLowerCase();
     return h==='x.com'||h.endsWith('.x.com')||
       h==='twitter.com'||h.endsWith('.twitter.com')||
@@ -50,7 +50,7 @@ export function createVerifiedEgressFetch({fetchImpl=globalThis.fetch}={}){
   };
 }
 
-export function createRemoteEgressFetch({endpoint,token,fetchImpl=globalThis.fetch}={}){
+export function createRemoteEgressFetch({endpoint,token,fetchImpl=globalThis.fetch,exitMode='warp',expectedIP='',expectedCountry='JP'}={}){
   const base=String(endpoint||'').trim();
   const secret=String(token||'');
   if(!base)throw new VpnEgressError('VPN egress endpoint is not configured');
@@ -60,8 +60,16 @@ export function createRemoteEgressFetch({endpoint,token,fetchImpl=globalThis.fet
   }
   if(secret.length<24)throw new Error('VPN egress token must be at least 24 characters');
   if(typeof fetchImpl!=='function')throw new TypeError('fetch implementation is required');
+  if(!['warp','shared'].includes(exitMode)||(exitMode==='shared'&&!validExitConfig(expectedIP,expectedCountry)))throw new VpnEgressError('共通出口のIPv4・国コードを設定してください');
 
   return async function remoteEgressFetch(input,init){
+    if(exitMode==='shared'){
+     try{
+      const health=new URL(url);health.pathname=health.pathname.replace(/\/fetch\/?$/,'/healthz');health.search='';
+      const response=await fetchImpl(health,{headers:{'x-xnekama-egress-token':secret},redirect:'error',signal:AbortSignal.timeout(3000)});
+      if(response.status!==200||!verifiedGateway(await response.json(),{mode:exitMode,ip:expectedIP,country:expectedCountry}))throw new VpnEgressError('共通VPN出口を確認できません');
+     }catch(error){throw error instanceof VpnEgressError?error:new VpnEgressError('共通VPN出口の確認が失敗しました');}
+    }
     const original=new Request(input,init);
     const headers=new Headers(original.headers);
     headers.set('x-xnekama-target',original.url);

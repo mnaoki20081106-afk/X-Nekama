@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #import <mach-o/dyld.h>
 #import "Autopilot.h"
+#import "VPNGate.h"
 #include <string.h>
 
 static const void *kNXButtonKey = &kNXButtonKey;
@@ -460,6 +461,9 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self openNotificationManagement];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"共通VPN出口を設定" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NXVPNConfigure(NXPresenter(self.composer));
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"X内蔵Grokで投稿文を作る（実験）"

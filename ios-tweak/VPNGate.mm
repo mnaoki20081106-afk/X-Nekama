@@ -1,5 +1,6 @@
 #import "VPNGate.h"
 #import "VPNPolicy.h"
+#import "VPNExitPolicy.h"
 #import <objc/runtime.h>
 #import <Network/Network.h>
 #import <ifaddrs.h>
@@ -8,6 +9,40 @@
 
 static std::mutex NXVPNMutex;
 static NXVPNPolicy NXVPNState;
+static const void *NXVPNLabelKey=&NXVPNLabelKey;
+static const void *NXVPNSwitchLabelKey=&NXVPNSwitchLabelKey;
+static NSDictionary *NXVPNConfig(void) {
+    return [NSUserDefaults.standardUserDefaults dictionaryForKey:@"x-nekama.vpn-exit"] ?: @{@"mode":@"warp"};
+}
+static BOOL NXVPNShared(void) { return [NXVPNConfig()[@"mode"] isEqual:@"shared"]; }
+static void NXVPNSetConfig(NSDictionary *config) {
+    [NSUserDefaults.standardUserDefaults setObject:config forKey:@"x-nekama.vpn-exit"];
+    std::lock_guard<std::mutex> lock(NXVPNMutex); NXVPNState.invalidate(UIApplication.sharedApplication.applicationState==UIApplicationStateActive);
+}
+void NXVPNConfigure(UIViewController *presenter) {
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"共通VPN出口の設定" message:@"iPhone・投稿中継・Cloudflareに同じ固定IPv4と国コードを設定します。WireGuardの接続設定は別途iphone.confを取り込んでください。接続が確認できるまでXは表示しません。" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *f){f.placeholder=@"固定の出口IPv4";f.text=NXVPNConfig()[@"expected_ip"];f.keyboardType=UIKeyboardTypeDecimalPad;}];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *f){f.placeholder=@"国コード（JP）";f.text=NXVPNConfig()[@"country"]?:@"JP";f.autocapitalizationType=UITextAutocapitalizationTypeAllCharacters;f.autocorrectionType=UITextAutocorrectionTypeNo;}];
+    [alert addAction:[UIAlertAction actionWithTitle:@"共通出口を保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){
+        NSString *ip=[alert.textFields[0].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]?:@"";
+        NSString *country=[[alert.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] uppercaseString]?:@"";
+        if (!NXValidExitConfig(ip.UTF8String,country.UTF8String)) {
+            UIAlertController *error=[UIAlertController alertControllerWithTitle:@"設定を確認してください" message:@"固定IPv4と2文字の国コードを入力してください。設定は変更していません。" preferredStyle:UIAlertControllerStyleAlert];
+            [error addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+            [presenter presentViewController:error animated:YES completion:nil];return;
+        }
+        NXVPNSetConfig(@{@"mode":@"shared",@"expected_ip":ip,@"country":country});
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"通常のWARPモードに戻す" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){NXVPNSetConfig(@{@"mode":@"warp"});}]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+void NXVPNOpenProvider(UIViewController *presenter) {
+    if (!NXVPNShared()) { [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"com.cloudflare.warp://"] options:@{} completionHandler:nil]; return; }
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"WireGuardに接続" message:@"WireGuardアプリにiphone.confを取り込み、VPN構成の追加を許可して接続をONにしてください。WARPやSideStore用VPNでは共通出口を確認できません。接続したらXへ戻ってください。" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
 static BOOL NXVPNIsTunnel(void) {
     struct ifaddrs *list = NULL; BOOL found = NO;
     if (getifaddrs(&list)) return NO;
@@ -105,8 +140,9 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
 }
 - (void)connect:(UISwitch *)sender {
     [sender setOn:NO animated:YES]; // The UI never claims connection before proof.
-    [self warp];
+    NXVPNOpenProvider(sender.window.rootViewController);
 }
+- (void)configure:(UIButton *)sender { NXVPNConfigure(sender.window.rootViewController); }
 - (void)warp {
     [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"com.cloudflare.warp://"] options:@{} completionHandler:nil];
 }
@@ -119,11 +155,14 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
     controller.view.backgroundColor=UIColor.blackColor;
     UILabel *label=[UILabel new]; label.textColor=UIColor.whiteColor; label.numberOfLines=0; label.textAlignment=NSTextAlignmentCenter;
     label.text=@"VPN未接続・確認待ち\n\nWARP接続を確認するまでXを表示しません。\n下のスイッチからWARPを開き、接続をONにしてXへ戻ってください。\n\n1.1.1.1のみ・SideStore VPNでは解除されません。";
+    objc_setAssociatedObject(window,NXVPNLabelKey,label,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UILabel *switchLabel=[UILabel new]; switchLabel.text=@"VPNを接続（WARPを開く）"; switchLabel.textColor=UIColor.whiteColor;
+    objc_setAssociatedObject(window,NXVPNSwitchLabelKey,switchLabel,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UISwitch *connect=[UISwitch new]; connect.on=NO;
     [connect addTarget:self action:@selector(connect:) forControlEvents:UIControlEventValueChanged];
     UIStackView *row=[[UIStackView alloc] initWithArrangedSubviews:@[switchLabel,connect]]; row.axis=UILayoutConstraintAxisHorizontal; row.spacing=12;
-    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:@[label,row]]; stack.axis=UILayoutConstraintAxisVertical; stack.spacing=24; stack.translatesAutoresizingMaskIntoConstraints=NO;
+    UIButton *configure=[UIButton buttonWithType:UIButtonTypeSystem];[configure setTitle:@"共通VPN出口を設定" forState:UIControlStateNormal];[configure addTarget:self action:@selector(configure:) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:@[label,row,configure]]; stack.axis=UILayoutConstraintAxisVertical; stack.spacing=24; stack.translatesAutoresizingMaskIntoConstraints=NO;
     [controller.view addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.leadingAnchor constant:24],[stack.trailingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.trailingAnchor constant:-24],[stack.centerYAnchor constraintEqualToAnchor:controller.view.centerYAnchor]]];
     [self.covers setObject:window forKey:scene]; return window;
@@ -133,11 +172,19 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
         if ([scene isKindOfClass:UIWindowScene.class]) [self cover:(UIWindowScene *)scene].hidden=!locked;
 }
 - (void)refresh {
+    for(UIWindow *window in self.covers.objectEnumerator){
+        UILabel *label=objc_getAssociatedObject(window,NXVPNLabelKey);
+        UILabel *switchLabel=objc_getAssociatedObject(window,NXVPNSwitchLabelKey);
+        switchLabel.text=NXVPNShared()?@"WireGuardの接続手順":@"VPNを接続（WARPを開く）";
+        if(NXVPNShared())label.text=[NSString stringWithFormat:@"共通VPN出口の確認待ち\n\nWireGuardを接続してXへ戻ってください。\n設定した出口IP・国と一致するまでXを表示しません。\n\n出口: %@ / %@",NXVPNConfig()[@"expected_ip"]?:@"未設定",NXVPNConfig()[@"country"]?:@"未設定"];
+        else label.text=@"VPN未接続・確認待ち\n\nWARPを接続してXへ戻ってください。\n1.1.1.1のみ・SideStore VPNでは解除されません。";
+    }
     BOOL ready=NXVPNReady(); [self showCovers:!ready]; if (ready) NXVPNResumePending();
     if (UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
     if (self.busy || (self.lastProbe && -self.lastProbe.timeIntervalSinceNow<2)) return;
     self.lastProbe=NSDate.date; self.busy=YES;
     unsigned long epoch; { std::lock_guard<std::mutex> lock(NXVPNMutex); epoch=NXVPNState.epoch; }
+    NSDictionary *exitConfig=NXVPNConfig();
     NSURLSessionConfiguration *configuration=NSURLSessionConfiguration.ephemeralSessionConfiguration;
     configuration.URLCache=nil; configuration.HTTPCookieStorage=nil; configuration.URLCredentialStorage=nil;
     configuration.requestCachePolicy=NSURLRequestReloadIgnoringLocalCacheData;
@@ -145,7 +192,12 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
     NSURLRequest *request=[NSURLRequest requestWithURL:[NSURL URLWithString:@"https://www.cloudflare.com/cdn-cgi/trace"] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:3];
     NSURLSessionDataTask *task=[session dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
         NSString *trace=data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
-        BOOL valid=!error && [response isKindOfClass:NSHTTPURLResponse.class] && ((NSHTTPURLResponse *)response).statusCode==200 && [response.URL.absoluteString isEqualToString:request.URL.absoluteString] && ([trace containsString:@"\nwarp=on\n"] || [trace containsString:@"\nwarp=plus\n"]) && NXVPNIsTunnel();
+        BOOL shared=[exitConfig[@"mode"] isEqual:@"shared"];
+        BOOL knownMode=shared||[exitConfig[@"mode"] isEqual:@"warp"];
+        NSString *expectedIP=[exitConfig[@"expected_ip"] isKindOfClass:NSString.class]?exitConfig[@"expected_ip"]:@"";
+        NSString *country=[exitConfig[@"country"] isKindOfClass:NSString.class]?exitConfig[@"country"]:@"";
+        BOOL proof=knownMode&&trace&&NXExitProof(trace.UTF8String,shared,expectedIP.UTF8String,country.UTF8String);
+        BOOL valid=!error && [response isKindOfClass:NSHTTPURLResponse.class] && ((NSHTTPURLResponse *)response).statusCode==200 && [response.URL.absoluteString isEqualToString:request.URL.absoluteString] && proof && NXVPNIsTunnel();
         dispatch_async(dispatch_get_main_queue(),^{
             self.busy=NO;
             { std::lock_guard<std::mutex> lock(NXVPNMutex); NXVPNState.result(epoch,valid,NSProcessInfo.processInfo.systemUptime); }

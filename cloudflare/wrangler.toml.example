@@ -35,6 +35,9 @@ max_concurrency = 4
 crons = ["* * * * *"]
 
 [vars]
+X_EXIT_MODE = "warp"
+X_EXIT_IP = ""
+X_EXIT_COUNTRY = "JP"
 X_EGRESS_URL = "https://vpn-egress.example.com/fetch"
 PUBLIC_BASE_URL = "https://REPLACE_WITH_YOUR_DOMAIN"
 

@@ -14,6 +14,7 @@ services:
       WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:?Set the VPN private key}
       WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:?Set the VPN tunnel address}
       WIREGUARD_PRESHARED_KEY: ${WIREGUARD_PRESHARED_KEY:-}
+      WIREGUARD_ALLOWED_IPS: '0.0.0.0/0,::/0'
       FIREWALL: 'on'
       FIREWALL_INPUT_PORTS: '3000,8788'
       HEALTH_SERVER_ADDRESS: 127.0.0.1:9999
@@ -39,6 +40,9 @@ services:
       APP_SECRET: ${APP_SECRET:?Set a stable random secret of at least 32 characters}
       X_VPN_MODE: gluetun
       X_VPN_INTERFACE: tun0
+      X_EXIT_MODE: ${X_EXIT_MODE:-warp}
+      X_EXIT_IP: ${X_EXIT_IP:-}
+      X_EXIT_COUNTRY: ${X_EXIT_COUNTRY:-JP}
     volumes:
       - xnekama-data:/app/data
   egress:
@@ -60,5 +64,8 @@ services:
       X_EGRESS_TOKEN: ${X_EGRESS_TOKEN:-}
       X_VPN_MODE: gluetun
       X_VPN_INTERFACE: tun0
+      X_EXIT_MODE: ${X_EXIT_MODE:-warp}
+      X_EXIT_IP: ${X_EXIT_IP:-}
+      X_EXIT_COUNTRY: ${X_EXIT_COUNTRY:-JP}
 volumes:
   xnekama-data:

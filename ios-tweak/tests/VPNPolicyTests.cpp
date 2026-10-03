@@ -1,7 +1,16 @@
 #include "../VPNPolicy.h"
+#include "../VPNExitPolicy.h"
 #include <cassert>
 #include <iostream>
 int main() {
+    assert(NXExitProof("ip=203.0.113.8\nloc=JP\nwarp=off\n",true,"203.0.113.8","JP"));
+    assert(!NXExitProof("ip=203.0.113.9\nloc=JP\nwarp=off\n",true,"203.0.113.8","JP"));
+    assert(!NXExitProof("ip=203.0.113.8\nloc=US\nwarp=off\n",true,"203.0.113.8","JP"));
+    assert(!NXExitProof("ip=203.0.113.8\nip=203.0.113.9\nloc=JP\n",true,"203.0.113.8","JP"));
+    assert(!NXExitProof("warp=on\n",true,"","JP"));
+    assert(NXExitProof("warp=on\n",false,"",""));
+    assert(!NXExitProof("warp=off\n",false,"",""));
+    assert(!NXValidExitConfig("203.0.113.8.","JP"));
     NXVPNPolicy p;
     assert(!p.ready(10,true)); // Cold start.
     p.invalidate(true); auto request=p.epoch;

@@ -4,6 +4,7 @@ import {readFile,writeFile} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {validExitConfig,verifiedGateway} from '../exit-policy.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const configPath=join(here,'wrangler.toml');
@@ -12,6 +13,9 @@ const wrangler=['--yes','wrangler@4'];
 const doctor=process.argv.includes('--doctor');
 const egressUrl=String(process.env.X_EGRESS_URL||'').trim();
 const egressToken=String(process.env.X_EGRESS_TOKEN||'');
+const exitMode=process.env.X_EXIT_MODE||'warp';
+const exitIP=process.env.X_EXIT_IP||'';
+const exitCountry=process.env.X_EXIT_COUNTRY||'JP';
 const nodeMajor=Number(process.versions.node.split('.')[0]);
 if(!Number.isInteger(nodeMajor)||nodeMajor<24){
  console.error('[X-Nekama] Node.js 24以上が必要です。現在: '+process.versions.node);
@@ -150,6 +154,9 @@ crons = ["* * * * *"]
 
 [vars]
 X_EGRESS_URL = "${egressUrl.replace(/\\/g,'\\\\').replace(/"/g,'\\\"')}"
+X_EXIT_MODE = "${exitMode}"
+X_EXIT_IP = "${exitIP}"
+X_EXIT_COUNTRY = "${exitCountry}"
 
 `;
 }
@@ -171,19 +178,20 @@ async function copyText(text){
  return false;
 }
 function requireEgressConfig(){
- if(!egressUrl)throw new Error('X_EGRESS_URL が必要です。WARP接続済みegressの https://.../fetch を設定してください');
+ if(!['warp','shared'].includes(exitMode)||!/^[A-Z]{2}$/.test(exitCountry)||((exitMode==='shared'||exitIP)&&!validExitConfig(exitIP,exitCountry)))throw new Error('共通出口用の X_EXIT_MODE=shared、X_EXIT_IP、X_EXIT_COUNTRY を設定してください');
+ if(!egressUrl)throw new Error('X_EGRESS_URL が必要です。VPN接続済み中継の https://.../fetch を設定してください');
  if(egressToken.length<24)throw new Error('X_EGRESS_TOKEN は24文字以上で設定し、egress側と同じ値を使ってください');
  const parsed=new URL(egressUrl);
  if(parsed.protocol!=='https:')throw new Error('X_EGRESS_URL はHTTPSで公開してください');
  return {url:parsed.toString(),token:egressToken};
 }
-async function egressHealth(url,token){
+async function egressHealth(url,token,options={mode:exitMode,ip:exitIP,country:exitCountry}){
  const healthUrl=new URL(url);
  healthUrl.pathname=healthUrl.pathname.replace(/\/fetch\/?$/,'/healthz');
- const response=await fetch(healthUrl,{headers:{'x-xnekama-egress-token':token,'accept':'application/json'}});
- if(!response.ok)throw new Error(`VPN egressがWARP接続済みとして応答しません: HTTP ${response.status}`);
+ const response=await fetch(healthUrl,{headers:{'x-xnekama-egress-token':token,'accept':'application/json'},redirect:'error',signal:AbortSignal.timeout(3000)});
+ if(!response.ok)throw new Error(`VPN中継が接続済みとして応答しません: HTTP ${response.status}`);
  const data=await response.json().catch(()=>({}));
- if(data.warp!=='verified')throw new Error('VPN egressでWARPを確認できません');
+ if(!verifiedGateway(data,options))throw new Error('VPN egressの接続または固定出口IP・国を確認できません');
 }
 async function health(url){
  const response=await fetch(url+'/api/auth',{headers:{accept:'application/json'}});
@@ -208,7 +216,8 @@ async function doctorRun(){
  if(!queues.all.includes(queue))throw new Error('Queueが見つかりません');
  const secrets=await run(['secret','list','--config',configPath],{quiet:true});
  if(!secrets.all.includes('X_EGRESS_TOKEN'))throw new Error('X_EGRESS_TOKEN Secretが見つかりません');
- if(egressToken.length>=24)await egressHealth(configuredEgress,egressToken);
+ if(egressToken.length>=24)await egressHealth(configuredEgress,egressToken,{mode:config.match(/X_EXIT_MODE\s*=\s*"([^"]+)"/)?.[1]||'warp',ip:config.match(/X_EXIT_IP\s*=\s*"([^"]*)"/)?.[1]||'',country:config.match(/X_EXIT_COUNTRY\s*=\s*"([^"]+)"/)?.[1]||'JP'});
+ else note('X_EGRESS_TOKENが実行環境にないためVPN出口の実接続は未確認です。');
  await health(baseUrl);
  note(`OK: ${baseUrl}`);
 }
@@ -217,7 +226,7 @@ async function main(){
  if(doctor)return doctorRun();
  note('Cloudflare完全自動セットアップを開始');
  const egress=requireEgressConfig();
- note('VPN egressのWARP接続を確認');
+ note('VPN egressの接続と出口設定を確認');
  await egressHealth(egress.url,egress.token);
 
  const identity=await ensureLogin();

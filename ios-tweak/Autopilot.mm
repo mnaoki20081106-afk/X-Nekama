@@ -492,7 +492,7 @@ static void NXComposeCall(const void *string, const void *style, const void *mod
     NSString *status=[NSString stringWithFormat:@"%@\nアカウント: @%@\n参考: @%@ / %lu件\n推定間隔: %.1f時間\nWARP: %@\nアプリを前面で開いている間に動作します。",self.message,NXString(self.state[@"username"]),NXString(self.state[@"reference"]),(unsigned long)[self.state[@"reference_posts"] count],[self interval]/3600.0,[self warpReady]?@"接続確認済み":@"未確認"];
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"Nekama 自動運用" message:status preferredStyle:UIAlertControllerStyleActionSheet];
     [menu addAction:[UIAlertAction actionWithTitle:@"お手本・キャラクター設定" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){ [self configure:presenter]; }]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"WARPを開く" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){ [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"com.cloudflare.warp://"] options:@{} completionHandler:nil]; }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"VPNを接続" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){ NXVPNOpenProvider(presenter); }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"お手本の投稿を取得" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){ [self beginReference]; }]];
     [menu addAction:[UIAlertAction actionWithTitle:self.running?@"自動運用を停止":@"自動運用を開始" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){
         if (self.running) { [self pause:@"停止しました。"]; return; }
