@@ -65,6 +65,8 @@ XのWeb実装が変わった場合はXActions側の追従が必要です。
 
 ## 実装済み
 
+完成IPAをGitHub Actionsから取得する手順は [IPA_BUILD_JA.md](docs/IPA_BUILD_JA.md) を参照してください。`iOS IPA Build` はDriveの元IPAからSideStore向けの完成IPAとSHA-256を生成します。初回のみActions用のDrive読み取り認証が必要です。
+
 - 複数Xアカウント
 - アカウントごとの人格/口調/年齢/職業/場所/趣味/一人称/NG話題
 - 浮上頻度を「N日に1回」で数値設定

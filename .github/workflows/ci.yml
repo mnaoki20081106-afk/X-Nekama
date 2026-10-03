@@ -12,6 +12,8 @@ jobs:
           node-version: '24'
       - run: npm ci --ignore-scripts
       - run: npm test
+      - name: Test IPA build helpers
+        run: python3 -m unittest discover -s ios-tweak/tests -p 'test_*.py'
       - run: node --check server.mjs
       - run: node --check x.mjs
       - run: node --check egress.mjs

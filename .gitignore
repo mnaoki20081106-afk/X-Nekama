@@ -10,3 +10,6 @@ cloudflare/.setup-state.json
 cloudflare/.setup-url
 shared-exit-config/
 *.conf
+ios-tweak/.theos/
+ios-tweak/packages/
+**/__pycache__/

@@ -36,6 +36,7 @@ case "$MODE" in
     else
       cyan -i "$IPA" -o "$OUT" -u -w -f "$DYLIB"
     fi
+    python3 ./verify_built_ipa.py "$OUT"
     echo "Created: $OUT"
     ;;
   --rootless)
