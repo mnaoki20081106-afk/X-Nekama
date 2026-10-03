@@ -120,7 +120,7 @@ Wranglerは対応環境ではOSキーチェーンを使う安全なログイン�
   https://x-nekama-xxxx.example.workers.dev
 ```
 
-セットアップ成功時は、このURLを自動でクリップボードへコピーします。改造Xの **✦ Nekama → Core URLを設定** に貼り付けます。以後は **✦ Nekama → X-Nekama Coreを開く** から自分のCloudflare環境へ入れます。
+セットアップ成功時は、このURLを自動でクリップボードへコピーします。改造Xの **✦ Nekama → Cloudflare連携・接続先 → 作成済みサーバーに接続** に貼り付けます。以後は **✦ Nekama → 投稿予約・カレンダー・生成設定** から自分のCloudflare環境へ入れます。
 
 ---
 
@@ -303,7 +303,7 @@ Cloudflare自体の料金体系・無料枠はCloudflare側で変更される可
 
 # アンインストール/停止
 
-完全自動予約が不要になった場合、X-Nekamaアプリ側でCloudflare連携を解除すれば投稿要求は送られません。
+アプリ側の接続解除だけでは、サーバーへ保存した予約は停止しません。管理画面で予約を解除するか、Cloudflare側でCron/Queue/Workerを停止してください。
 
 Cloudflareリソース自体を削除する場合は、誤操作でデータを失わないよう**自動削除機能は用意していません**。
 Cloudflare Dashboardから本人が確認して削除してください。

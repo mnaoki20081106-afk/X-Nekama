@@ -14,6 +14,7 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
   const ready=Promise.race([new Promise((resolve,reject)=>{child.stdout.on('data',d=>{if(d.toString().includes('X-Nekama:'))resolve()});child.on('exit',()=>reject(new Error('server exited')))}),new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('startup timeout')),8000);timer.unref()})]);
   await ready;
   const root=`http://127.0.0.1:${port}`;let cookie='';
+  const discovery=await fetch(root+'/api/instance');assert.equal(discovery.status,200);assert.equal((await discovery.json()).platform,'node');
   const send=async(path,method='GET',body)=>{const res=await fetch(root+path,{method,headers:{...(cookie?{cookie}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});return {res,json:await res.json()}};
   assert.equal((await send('/api/state')).res.status,401);
   let r=await send('/api/login','POST',{password:'wrong'});assert.equal(r.res.status,401);

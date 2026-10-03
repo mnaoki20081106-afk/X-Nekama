@@ -62,13 +62,13 @@ static UIColor *NXServerBlue(void){return [UIColor colorWithRed:0.114 green:0.60
  NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:probe];[request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
  [[session dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
   NSDictionary *info=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
-  BOOL valid=!error&&[(NSHTTPURLResponse *)response statusCode]==200&&[response.URL.absoluteString isEqual:probe.absoluteString]&&[info isKindOfClass:NSDictionary.class]&&[info[@"product"] isEqual:@"x-nekama"]&&[info[@"protocol_version"] isEqual:@1]&&[info[@"platform"] isEqual:@"cloudflare-workers"];
+  BOOL valid=!error&&[(NSHTTPURLResponse *)response statusCode]==200&&[response.URL.absoluteString isEqual:probe.absoluteString]&&[info isKindOfClass:NSDictionary.class]&&[info[@"product"] isEqual:@"x-nekama"]&&[info[@"protocol_version"] isEqual:@1]&&([info[@"platform"] isEqual:@"cloudflare-workers"]||[info[@"platform"] isEqual:@"node"]);
   [session finishTasksAndInvalidate];
   dispatch_async(dispatch_get_main_queue(),^{
    if(epoch!=self.connectionEpoch)return;self.probeSession=nil;
    if(!NXVPNReady()||!valid){self.status.text=@"連携できませんでした。URL・デプロイ状態・VPNを確認してください。";[self message:self.status.text title:@"サーバー連携"];return;}
    [NSUserDefaults.standardUserDefaults setObject:server.absoluteString forKey:NXServerURLKey];[NSUserDefaults.standardUserDefaults setObject:server.absoluteString forKey:@"x-nekama.core-url"];[self load];
-   if(![info[@"vpn_egress_configured"] boolValue])[self message:@"サーバーを連携しました。自動投稿を使う前にCloudflare側のVPN中継URL・認証Secretを設定してください。" title:@"VPN中継が未設定です"];
+   if([info[@"platform"] isEqual:@"cloudflare-workers"]&&![info[@"vpn_egress_configured"] boolValue])[self message:@"サーバーを連携しました。自動投稿を使う前にCloudflare側のVPN中継URL・認証Secretを設定してください。" title:@"VPN中継が未設定です"];
   });
  }] resume];
 }
