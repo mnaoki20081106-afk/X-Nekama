@@ -7,6 +7,7 @@ static NSString *const NXGuideRoot=@"https://github.com/mnaoki20081106-afk/X-Nek
 @property(nonatomic,strong) UIStackView *stack;
 @property(nonatomic,copy) dispatch_block_t connect;
 @property(nonatomic,copy) dispatch_block_t manage;
+- (void)nxShowStep:(NSInteger)step;
 @end
 @implementation NXSetupGuide
 - (void)viewDidLoad{
@@ -47,10 +48,10 @@ static NSString *const NXGuideRoot=@"https://github.com/mnaoki20081106-afk/X-Nek
  if(self.step>0)[self button:@"前の手順へ" action:@selector(previous)];
  [self label:@"進行位置は保存されます。各項目の設定・動作を自動で完了扱いにはしません。" font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote] color:UIColor.secondaryLabelColor];
 }
-- (void)move:(NSInteger)step{self.step=MAX(0,MIN(4,step));[NSUserDefaults.standardUserDefaults setInteger:self.step forKey:NXGuideStepKey];[self render];[(UIScrollView *)self.stack.superview setContentOffset:CGPointZero animated:NO];}
-- (void)next{[self move:self.step+1];}
-- (void)previous{[self move:self.step-1];}
-- (void)restart{[self move:0];}
+- (void)nxShowStep:(NSInteger)step{self.step=MAX(0,MIN(4,step));[NSUserDefaults.standardUserDefaults setInteger:self.step forKey:NXGuideStepKey];[self render];[(UIScrollView *)self.stack.superview setContentOffset:CGPointZero animated:NO];}
+- (void)next{[self nxShowStep:self.step+1];}
+- (void)previous{[self nxShowStep:self.step-1];}
+- (void)restart{[self nxShowStep:0];}
 - (void)open:(NSString *)url{[UIApplication.sharedApplication openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];}
 - (void)dashboard{[self open:@"https://dash.cloudflare.com/"];}
 - (void)github{[self open:@"https://github.com/"];}
