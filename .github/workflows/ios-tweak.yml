@@ -24,11 +24,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # One-run bootstrap only. This signed URL is removed immediately after the
-  # complete IPA path is proven in Actions.
-  BOOTSTRAP_SOURCE_IPA_URL: "https://sdmntprjapaneast.oaiusercontent.com/files/00000000-56b0-8209-9a41-5f635fc874df/raw?se=2026-10-03T13%3A02%3A13Z&sp=r&sv=2026-02-06&sr=b&scid=2c63a8b8-cbfe-5f09-92d6-abcd6432db31&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-10-03T02%3A46%3A49Z&ske=2026-10-04T02%3A46%3A49Z&sks=b&skv=2026-02-06&sig=NlhlqXshco32IFHu/Y2z9v7KUqXjzHnD5qAYw3UZxTw%3D"
-
 jobs:
   build:
     runs-on: macos-15-intel
@@ -62,9 +57,6 @@ jobs:
           fi
 
           SOURCE_URL="$INPUT_SOURCE_IPA_URL"
-          if [[ -z "$SOURCE_URL" ]]; then
-            SOURCE_URL="$BOOTSTRAP_SOURCE_IPA_URL"
-          fi
 
           if [[ -n "$SOURCE_URL" ]]; then
             if [[ "$SOURCE_URL" != https://* ]]; then
@@ -170,9 +162,6 @@ jobs:
         run: |
           set -euo pipefail
           SOURCE_URL="$INPUT_SOURCE_IPA_URL"
-          if [[ -z "$SOURCE_URL" ]]; then
-            SOURCE_URL="$BOOTSTRAP_SOURCE_IPA_URL"
-          fi
           curl --fail --location --retry 3 --retry-all-errors \
             --connect-timeout 30 --max-time 900 \
             --output "$RUNNER_TEMP/X-source.ipa" "$SOURCE_URL"
