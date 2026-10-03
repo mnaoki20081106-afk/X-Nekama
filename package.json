@@ -7,14 +7,38 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node server.mjs",
-    "dev": "node --watch server.mjs",
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --env-file-if-exists=.env --watch server.mjs",
     "test": "node --test",
     "cf:migrate": "wrangler d1 migrations apply DB --remote --config wrangler.toml",
     "cf:deploy": "npm run cf:migrate && wrangler deploy --config wrangler.toml",
-    "deploy": "npm run cf:migrate && wrangler deploy --config wrangler.toml"
+    "deploy": "npm run cf:migrate && wrangler deploy --config wrangler.toml",
+    "egress": "node --env-file-if-exists=.env vpn-egress.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0",
+    "undici": "^8.11.2"
+  },
+  "cloudflare": {
+    "bindings": {
+      "X_EGRESS_URL": {
+        "description": "自分のVPN中継のHTTPS /fetch URL。Workersとは別の常時稼働VPN中継が必要です。"
+      },
+      "X_EGRESS_TOKEN": {
+        "description": "VPN中継と同じ24文字以上の認証Secret。CloudflareのSecretとして保存します。"
+      },
+      "X_EXIT_MODE": {
+        "description": "共通の固定出口なら shared、通常WARPなら warp。"
+      },
+      "X_EXIT_IP": {
+        "description": "shared の場合、iPhone・VPN中継と同じ固定公開IPv4。"
+      },
+      "X_EXIT_COUNTRY": {
+        "description": "出口の国コード。日本なら JP。"
+      }
+    }
   }
 }

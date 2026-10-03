@@ -71,8 +71,17 @@ function parseTweetResult(json) {
   const result =
     json?.data?.create_tweet?.tweet_results?.result ??
     json?.data?.create_tweet?.tweet_result?.result ??
-    json?.data?.create_tweet ??
-    json;
+    json?.data?.create_tweet;
+  // A refused post (a duplicate, a blocked reply, a suspended account) comes
+  // back as HTTP 200 with an `errors` array and no tweet. Returning that body
+  // would hand callers X's error as if it were the post.
+  if (!result || (Array.isArray(json?.errors) && json.errors.length && !result.rest_id)) {
+    const messages = (json?.errors || []).map((e) => (e.code ? `${e.message} (code ${e.code})` : e.message)).filter(Boolean);
+    throw new TwitterApiError(`X did not create the post: ${messages.join('; ') || 'no post in the response'}`, {
+      status: 200,
+      data: json,
+    });
+  }
   return result;
 }
 

@@ -2,11 +2,22 @@
 
 架空AIキャラクターのX運用を補助するツールです。
 
+利用者ごとに自分のCloudflareアカウントへサーバーを配置し、アプリの「Cloudflare連携・接続先」から利用できます。[個人Cloudflareの連携手順](docs/PERSONAL_CLOUDFLARE_JA.md) を参照してください。
+
+## VPN必須のサーバー予約投稿（最新）
+
+iOSの投稿画面 `✦` →「投稿予約・カレンダー・生成設定」から、Xに近い黒・白・青の管理画面を開けます。カレンダーは日本時間の投稿時刻と日別一覧を表示します。口調・絵文字・カスタム指示・選択したお手本の取得済み投稿を生成プロンプトへ含めます。
+
+自動投稿は常時稼働Linuxサーバーで行い、VPNが未接続なら予約を待機させます。起動方法と未検証の範囲は [サーバーVPN設定](docs/SERVER_VPN_JA.md) を参照してください。通常のNode起動ではVPN設定が必要です。Cloudflare版は別サーバーのWARP確認済みゲートウェイ経由でXへ接続します。
+
+Cloudflareを管理・予約バックエンドにし、iPhoneと投稿側の出口を同じ固定IPv4へ揃えるWireGuardモードも利用できます。[共通VPN出口の設定](docs/SHARED_EXIT_JA.md) に設定生成・中継起動・Cloudflare配置・端末設定をまとめています。通常WARPモードと共通出口モードは別の構成です。実サーバー配置・実機確認は未完了です。
+
 ## 現在の基本方針
 
 **運営側がX API代・xAI API代を負担する構成は採用しません。**
 
 - Xへの接続・参考投稿取得・画像アップロード・投稿: XActionsのWebセッション経路
+- X向けサーバー通信: WARP確認済み、またはGluetun＋固定出口IP・国の一致を確認できる経路のみ許可
 - 投稿文/文体分析/画像生成: 利用者自身の端末にあるX/Grokへプロンプトと参照画像を渡す
 - X Developer / 有料X API: 不要
 - XAI_API_KEY: 不要
@@ -50,7 +61,11 @@ XActionsのHTTPクライアントとGraphQL更新追従コードを `vendor/xact
 
 XのWeb実装が変わった場合はXActions側の追従が必要です。
 
+認証・プロフィール取得・画像送信・投稿では同じWebクライアントのUser-Agentを使用します。プロフィールが既に設定済みなら二重取得せず、変更した場合は再取得して確認します。GraphQLのID更新による自動再送は読み取りに限り、投稿などの変更操作は再送しません。これは通信の一貫性と重複投稿防止のための実装であり、X側の記録や自動化の検知をなくす保証ではありません。
+
 ## 実装済み
+
+完成IPAをGitHub Actionsから取得する手順は [IPA_BUILD_JA.md](docs/IPA_BUILD_JA.md) を参照してください。`iOS IPA Build` はDriveの元IPAからSideStore向けの完成IPAとSHA-256を生成します。初回のみActions用のDrive読み取り認証が必要です。
 
 - 複数Xアカウント
 - アカウントごとの人格/口調/年齢/職業/場所/趣味/一人称/NG話題
@@ -62,6 +77,7 @@ XのWeb実装が変わった場合はXActions側の追従が必要です。
 - 背景
 - プリクラ/BeReal風/自撮り/鏡撮り/他撮り
 - お手本アカウント取得
+- 取得したお手本投稿を最大500件まで全文体分析し、生成時は分析要約＋均等抽出した生投稿本文を情報源として利用
 - Grok用文体分析パック
 - Grok用週次投稿パック
 - Grok用画像生成パック
@@ -72,6 +88,8 @@ XのWeb実装が変わった場合はXActions側の追従が必要です。
 - 重複投稿防止
 - 投稿結果不明時の自動再送停止
 - XActionsによる自動投稿
+- Node版のWARP fail-closed送信
+- Cloudflare Cron/QueueからWARP egress経由の自動投稿
 
 ## 投稿キューの安全設計
 
@@ -79,6 +97,7 @@ XのWeb実装が変わった場合はXActions側の追従が必要です。
 - 同じ本文の予約/送信中/直近24時間投稿済みを検知
 - 429や投稿送信前の一時通信障害だけ安全な範囲で再試行
 - 投稿送信後の通信断・5xx・投稿ID不明は自動再送しない
+- WARP未接続は送信前に遮断し、予約状態のまま60秒後に再確認
 - 送信結果が曖昧なら利用者確認へ送る
 
 ## Node版の起動
@@ -101,6 +120,8 @@ npm start
 
 xAI APIキーは不要です。
 
+Node版でXActions通信を使うホストはCloudflare WARPへ接続してください。各X向けHTTPリクエスト直前にWARPを確認し、未接続なら送信しません。
+
 ## Cloudflare版について
 
 `cloudflare/` は一般公開向けの任意バックエンドです。
@@ -113,6 +134,9 @@ Cloudflare版もAI生成は行わず、以下だけを担当します。
 - 参考投稿取得
 - 予約投稿キュー
 - XActions投稿
+- WARP egress経由のX通信
+
+Cloudflare Worker自身は端末のWARP経路を使えないため、Cloudflare版のX通信には **WARP接続済みのegressホスト** が1台必要です。WorkerのCron/Queueはそのegressだけを経由します。設定方法は `docs/VPN_EGRESS_JA.md` を参照してください。
 
 **厳密に運営費0を優先する場合、Cloudflare版を必須構成にはしません。** ホスティングやストレージの利用量によって費用が発生し得るためです。
 
@@ -137,12 +161,14 @@ Xパスワードは接続処理時だけ使い、保存しません。
 - Grok JSON取込の検証
 - 認証/保存/AI表記
 - 投稿キューの再試行/曖昧送信処理
+- WARP未接続時のfail-closed処理
+- XActions画像アップロードのINIT/APPEND/FINALIZE回帰テスト
 - 本文フィンガープリント
 
 
 ## Deploy to Cloudflare ボタン
 
-一般公開時はCloudflare公式の **Deploy to Cloudflare** ボタンを第一導線にします。
+一般公開時はCloudflare公式の **Deploy to Cloudflare** ボタンを第一導線にします。なお、予約自動投稿を有効にするにはデプロイ後に `X_EGRESS_URL` と `X_EGRESS_TOKEN` の設定が必要です。
 
 このリポジトリには既にDeploy Button用の `wrangler.toml` と `npm run deploy` を用意してあります。Cloudflare側がD1 / R2 / Queuesを自動プロビジョニングし、D1 migrationもdeploy scriptから適用します。
 

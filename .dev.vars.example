@@ -1,0 +1,2 @@
+# Deploy to Cloudflare asks for this Secret. Use the same value on your VPN gateway.
+X_EGRESS_TOKEN=

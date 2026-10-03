@@ -40,16 +40,20 @@ test('Cloudflare public runtime uses encrypted XActions sessions',async()=>{
   const source=await readFile('cloudflare/src/index.mjs','utf8');
   assert.match(source,/import \* as xactions from '\.\.\/\.\.\/x\.mjs'/);
   assert.match(source,/path==='\/api\/x-session'/);
-  assert.match(source,/await xactions\.verify\(cookies\)/);
-  assert.match(source,/await xactions\.login\(username,password,email\)/);
+  assert.match(source,/await xactions\.verify\(cookies,xTransport\(env\)\)/);
+  assert.match(source,/await xactions\.login\(username,password,email,xTransport\(env\)\)/);
   assert.match(source,/await xactions\.publish\(cookies,draft\.text,tempPath/);
+  assert.match(source,/createRemoteEgressFetch/);
+  assert.match(source,/VPN_REQUIRED/);
   assert.match(source,/seal\(env,resolved\.cookies,/);
 });
 
 test('Node runtime uses XActions session posting only',async()=>{
-  const source=await readFile('server.mjs','utf8');
-  assert.match(source,/await x\.checkBio\(cookies,a\.username\)/);
+  const source=(await readFile('server.mjs','utf8'))+(await readFile('scheduler.mjs','utf8'));
+  assert.match(source,/await x\.checkBio\(cookies,a\.username,xTransport\)/);
   assert.match(source,/await x\.publish\(cookies,d\.text,imagePath/);
+  assert.match(source,/createVerifiedEgressFetch/);
+  assert.match(source,/VPN_REQUIRED/);
   assert.doesNotMatch(source,/publishApi|checkApiBio|api_token_cipher/);
 });
 

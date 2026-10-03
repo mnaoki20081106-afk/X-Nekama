@@ -6,6 +6,14 @@ import {randomBytes,scryptSync,timingSafeEqual,createCipheriv,createDecipheriv,c
 import {db,dataDir,uid,row,all,run,publicAccount} from './db.mjs';
 import * as x from './x.mjs';
 import * as ai from './ai.mjs';
+import {sourceDocument,referencePlan} from './source.mjs';
+import {generateWithServerGrok} from './server-grok.mjs';
+const warp={ensure:()=>serverVPN.assertConnected()};
+import {contextReviewReason} from './context-policy.mjs';
+import * as vpnModule from './vpn.mjs';
+const serverVPN=process.env.WARP_PROXY_URL&&process.env.X_VPN_MODE!=='gluetun'?vpnModule.createVPNGate({configured:true,mode:'warp',fetch:async(input,init)=>(await import('./warp-transport.mjs')).warpFetch(input,init)}):vpnModule.serverVPN;
+import {createVerifiedEgressFetch} from './egress.mjs';
+const xTransport={fetch:process.env.X_VPN_MODE==='gluetun'?serverVPN.fetch:createVerifiedEgressFetch({fetchImpl:serverVPN.fetch})};
 import {fingerprintPost,classifyDeliveryError,retryDelayMs} from './delivery.mjs';
 const port=Number(process.env.PORT||3000),host=process.env.HOST||'127.0.0.1';
 const secretFile=join(dataDir,'.app-secret');
@@ -23,6 +31,7 @@ function authorized(req){const m=(req.headers.cookie||'').match(/(?:^|;\s*)sessi
 function json(res,code,data){res.writeHead(code,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(JSON.stringify(data))}
 function fail(code,message){const e=new Error(message);e.status=code;throw e}
 async function body(req,max=8e6){let chunks=[],size=0;for await(const c of req){size+=c.length;if(size>max)fail(413,'データが大きすぎます');chunks.push(c)}try{return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}')}catch{fail(400,'JSONを確認してください')}}
+function validatedDate(value){if(value==null||value==='')return null;if(typeof value!=='string'||!/(Z|[+-]\d{2}:\d{2})$/.test(value)||!Number.isFinite(Date.parse(value)))fail(400,'投稿日時をタイムゾーン付きで指定してください');return new Date(value).toISOString()}
 function requireAccount(id){const a=row('SELECT * FROM accounts WHERE id=?',id);if(!a)fail(404,'アカウントが見つかりません');return a}
 const MAX_DELIVERY_ATTEMPTS=3;
 function ensureNoQueuedDuplicate(draft){
@@ -56,7 +65,8 @@ function imageReferenceAssetsForDraft(d,a){
  return out;
 }
 function buildWeekPack(a,count){
- const refs=all("SELECT * FROM refs ORDER BY fetched_at DESC LIMIT 8");
+ const ids=JSON.parse(a.reference_ids||'[]');
+ const refs=ids.map(id=>row('SELECT * FROM refs WHERE id=?',id)).filter(Boolean).map(ref=>({...ref,posts:all('SELECT text,posted_at FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 50',ref.id)}));
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
  const interval=Math.min(365,Math.max(1,Number(a.activity_interval_days)||1));
  const futureDates=all("SELECT scheduled_at FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL",a.id)
@@ -64,7 +74,12 @@ function buildWeekPack(a,count){
  const latest=futureDates.length?Math.max(...futureDates):null;
  const seed=latest?new Date(latest+(interval-1)*86400000).toISOString():new Date().toISOString();
  const pack=ai.weekPrompt(a,refs,history,seed,count);
- return {account_id:a.id,count,prompt:pack.prompt,dates:pack.dates};
+ const sourcePosts=refs.flatMap(r=>r.posts.map(p=>({...p,username:r.username})));
+ if(a.use_reference_timing&&sourcePosts.length){
+  const plan=referencePlan(sourcePosts,count,latest||Date.now());pack.dates=plan.dates.map(d=>d.date);pack.times=plan.dates.map(d=>d.time);
+  pack.prompt+='\n参考投稿の頻度による最終予約候補。先の候補よりこちらを優先し、日時を変えず全件使ってください（JST）: '+JSON.stringify(plan.dates);
+ }
+ return {account_id:a.id,count,prompt:pack.prompt,dates:pack.dates,times:pack.times};
 }
 function importWeekPack(a,input,dates,count){
  const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
@@ -73,7 +88,7 @@ function importWeekPack(a,input,dates,count){
  try{
   for(const p of posts){
    const id=uid(),prompt=ai.imagePrompt(a,p,all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));
-   run('INSERT INTO drafts(id,account_id,text,image_style,scheduled_at,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,a.id,p.text,p.image_style,p.scheduled_at,prompt,fingerprintPost(p.text));
+   run('INSERT INTO drafts(id,account_id,text,image_style,scheduled_at,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,a.id,p.text,p.image_style,validatedDate(p.scheduled_at),prompt,fingerprintPost(p.text));
    ids.push(id);
   }
   db.exec('COMMIT');
@@ -103,11 +118,22 @@ function buildImagePack(d){
 function addJob(accountId,kind,work){const id=uid();run("INSERT INTO jobs(id,account_id,kind,status) VALUES(?,?,?,'running')",id,accountId,kind);Promise.resolve().then(work).then(detail=>run("UPDATE jobs SET status='done',detail=?,updated_at=datetime('now') WHERE id=?",String(detail||''),id)).catch(e=>{console.error(`${kind}:`,e);run("UPDATE jobs SET status='failed',detail=?,updated_at=datetime('now') WHERE id=?",String(e.message||e).slice(0,500),id)});return id}
 run("UPDATE jobs SET status='failed',detail='サーバー再起動により処理が中断しました',updated_at=datetime('now') WHERE status='running'");
  async function publishDue(){
+ const vpn=await serverVPN.check();
+ if(!vpn.connected){
+  run("UPDATE drafts SET last_error_kind='vpn_wait',error=? WHERE status='scheduled'",vpn.message);
+  return;
+ }
+ run("UPDATE drafts SET last_error_kind='',error=NULL WHERE status='scheduled' AND last_error_kind='vpn_wait'");
  const now=new Date().toISOString();
  const due=all("SELECT * FROM drafts WHERE status='scheduled' AND scheduled_at<=? AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,scheduled_at),scheduled_at LIMIT 10",now,now);
  for(const d of due){
   const a=requireAccount(d.account_id);
   if(!a.enabled||!a.session_cipher)continue;
+  const contextError=contextReviewReason(d.text);
+  if(contextError){
+   run("UPDATE drafts SET status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_error_kind='context_review',error=?,updated_at=datetime('now') WHERE id=? AND status='scheduled'",contextError,d.id);
+   continue;
+  }
   if(!acquirePublishLock(a.id,d.id))continue;
   let claimed=false;
   try{
@@ -118,12 +144,18 @@ run("UPDATE jobs SET status='failed',detail='サーバー再起動により処�
    if(d.image_style&&!asset)throw Error('投稿画像が未設定です。画像をセットしてから再予約してください');
    const imagePath=asset&&join(dataDir,'assets',asset.filename);
    const cookies=decrypt(a.session_cipher);
-   await x.checkBio(cookies,a.username);
-   const xId=await x.publish(cookies,d.text,imagePath,`架空AIキャラクター ${a.character_name} の生成画像`);
+   await x.checkBio(cookies,a.username,xTransport);
+   const current=requireAccount(a.id);
+   if(!current.enabled||current.config_revision!==a.config_revision){run("UPDATE drafts SET status='scheduled',attempt_count=MAX(attempt_count-1,0) WHERE id=?",d.id);continue;}
+   const xId=await x.publish(cookies,d.text,imagePath,`架空AIキャラクター ${a.character_name} の生成画像`,xTransport);
    run("UPDATE drafts SET status='posted',x_post_id=?,posted_at=datetime('now'),next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",xId,d.id);
   }catch(e){
    console.error('publish:',e);
    if(!claimed)continue;
+   if(['VPN_REQUIRED','VPN_UNAVAILABLE'].includes(e?.code)){
+    run("UPDATE drafts SET status='scheduled',attempt_count=MAX(attempt_count-1,0),next_attempt_at=?,last_error_kind='vpn_wait',error=?,updated_at=datetime('now') WHERE id=?",new Date(Date.now()+30000).toISOString(),String(e.message),d.id);
+    continue;
+   }
    const attempt=Number(d.attempt_count||0)+1;
    const info=classifyDeliveryError(e,e?.deliveryStage||'preflight');
    if(info.retryable&&attempt<MAX_DELIVERY_ATTEMPTS){
@@ -138,7 +170,26 @@ run("UPDATE jobs SET status='failed',detail='サーバー再起動により処�
 }
 // Interrupted in-flight requests stay 'publishing': an ambiguous response must never auto-post twice.
 await mkdir(join(dataDir,'assets'),{recursive:true,mode:0o700});
-let busy=false;async function tick(){if(busy)return;busy=true;try{await publishDue()}catch(e){console.error('scheduler:',e)}finally{busy=false}}
+let refillBusy=false;
+async function refillDue(){
+ if(refillBusy||process.env.SERVER_GROK!=='1')return;refillBusy=true;
+ try{for(const a of all("SELECT * FROM accounts WHERE enabled=1 AND server_generate=1 AND session_cipher IS NOT NULL AND (generation_next_at='' OR generation_next_at<=?)",new Date().toISOString())){
+  if(row("SELECT 1 FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') LIMIT 1",a.id))continue;
+  try{
+   if(!a.reference_id||!row("SELECT 1 FROM ref_posts WHERE ref_id=? LIMIT 1",a.reference_id))throw Error('お手本の投稿取得が必要です');
+   await warp.ensure();
+   const pack=buildWeekPack(a,Math.min(21,Math.max(1,Number(a.posting_frequency)||7)));
+   const history=all('SELECT text FROM drafts WHERE account_id=? ORDER BY created_at DESC LIMIT 30',a.id);
+   const value=await generateWithServerGrok(decrypt(a.session_cipher),pack.prompt+'\n画像を使わず、全件image_styleをnullにしてください。',{validate:value=>{const posts=ai.parseWeekResult(value,{dates:pack.dates,history,count:pack.count});if(posts.length!==pack.count||posts.some((p,i)=>p.image_style||(pack.times&&(p.scheduled_at.slice(11,16)!==pack.times[i]||p.scheduled_at.slice(0,10)!==pack.dates[i]))))throw Error('未完了・重複・画像付きの返答');return value;}});
+   const current=requireAccount(a.id);
+   if(!current.enabled||!current.server_generate||current.config_revision!==a.config_revision||row("SELECT 1 FROM drafts WHERE account_id=? AND status IN ('needs_review','scheduled','publishing') LIMIT 1",a.id))continue;
+   const result=importWeekPack(current,value,pack.dates,pack.count);
+   run("UPDATE accounts SET generation_error='',generation_next_at=? WHERE id=?",new Date(Date.now()+60000).toISOString(),a.id);
+   run("INSERT INTO jobs(id,account_id,kind,status,detail) VALUES(?,?,?,'done',?)",uid(),a.id,'server_grok',`${result.count}件生成`);
+  }catch(e){run("UPDATE accounts SET generation_error=?,generation_next_at=? WHERE id=?",String(e.message||e).slice(0,500),new Date(Date.now()+3600000).toISOString(),a.id);}
+ }}finally{refillBusy=false;}
+}
+let busy=false;async function tick(){if(busy)return;busy=true;try{await publishDue();void refillDue().catch(e=>console.error("refill:",e.message))}catch(e){console.error('scheduler:',e)}finally{busy=false}}
 setInterval(tick,30000).unref();
 setTimeout(tick,1000).unref();
 const staticFiles={'/':['public/index.html','text/html'],'/app.js':['public/app.js','text/javascript'],'/style.css':['public/style.css','text/css'],'/favicon.svg':['public/favicon.svg','image/svg+xml']};
@@ -147,27 +198,46 @@ const server=http.createServer(async(req,res)=>{try{
  res.setHeader('x-frame-options','DENY');res.setHeader('referrer-policy','no-referrer');res.setHeader('content-security-policy',"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'");
  if(method==='GET'&&staticFiles[path]){const [f,type]=staticFiles[path];res.writeHead(200,{'content-type':`${type}; charset=utf-8`,'cache-control':'no-store'});return res.end(await readFile(f))}
  if(method==='GET'&&path==='/api/auth')return json(res,200,{authenticated:authorized(req),mode:'password'});
+ if(method==='GET'&&path==='/api/instance')return json(res,200,{product:'x-nekama',protocol_version:1,platform:'node',deployment_model:'self-hosted'});
  if(method==='POST'&&path==='/api/login'){if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)fail(403,'送信元を確認してください');const attempt=limitLogin(req.socket.remoteAddress||'unknown');if(attempt.count>=8)fail(429,'時間を空けてから試してください');const b=await body(req,1024);const aa=scryptSync(String(b.password||''),'fixed-auth-verifier',32),bb=scryptSync(password,'fixed-auth-verifier',32);if(!timingSafeEqual(aa,bb)){attempt.count++;fail(401,'パスワードが違います')}attempt.count=0;res.setHeader('Set-Cookie',`session=${ticket()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${req.socket.encrypted||req.headers['x-forwarded-proto']==='https'?'; Secure':''}`);return json(res,200,{ok:true})}
  if(!authorized(req))fail(401,'ログインしてください');
  if(method!=='GET'){const origin=req.headers.origin,hostHeader=req.headers.host;if(origin&&new URL(origin).host!==hostHeader)fail(403,'送信元を確認してください')}
  if(method==='POST'&&path==='/api/logout'){res.setHeader('Set-Cookie','session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return json(res,200,{ok:true})}
- if(method==='GET'&&path==='/api/state'){return json(res,200,{accounts:all('SELECT * FROM accounts ORDER BY created_at DESC').map(publicAccount),refs:all('SELECT * FROM refs ORDER BY created_at DESC'),assets:all('SELECT id,kind,category,account_id,name,mime,created_at FROM assets ORDER BY created_at DESC'),drafts:all('SELECT * FROM drafts ORDER BY scheduled_at DESC,created_at DESC LIMIT 500'),jobs:all('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30'),configured:true,generation_mode:'device_grok',auth_mode:'password'})}
+ if(method==='GET'&&path==='/api/state'){return json(res,200,{accounts:all('SELECT * FROM accounts ORDER BY created_at DESC').map(publicAccount),refs:all('SELECT * FROM refs ORDER BY created_at DESC'),assets:all('SELECT id,kind,category,account_id,name,mime,created_at FROM assets ORDER BY created_at DESC'),drafts:all('SELECT * FROM drafts ORDER BY scheduled_at DESC,created_at DESC LIMIT 500'),jobs:all('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30'),configured:true,generation_mode:process.env.SERVER_GROK==='1'?'server_grok':'device_grok',auth_mode:'password',server_vpn:await serverVPN.check(),scheduler_mode:'server_vpn'})}
+ if(method==='GET'&&path.startsWith('/api/assets/')){const asset=row('SELECT * FROM assets WHERE id=?',path.slice(12));if(!asset)fail(404,'画像なし');const download=new URL(req.url,'http://localhost').searchParams.has('download');res.writeHead(200,{'content-type':asset.mime,'cache-control':'private, max-age=300','x-content-type-options':'nosniff',...(download?{'content-disposition':`attachment; filename="${asset.filename}"`}:{})});return res.end(await readFile(join(dataDir,'assets',asset.filename)))}
+ if(method==='POST'&&path==='/api/accounts'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'XのIDを確認してください');const id=uid();run('INSERT INTO accounts(id,username,display_name,character_name,bio) VALUES(?,?,?,?,?)',id,username,String(b.display_name||username).slice(0,80),String(b.character_name||b.display_name||username).slice(0,80),`架空のAIキャラクター｜${String(b.character_name||username).slice(0,60)}`);return json(res,201,{id})}
+ if(method==='GET'&&/^\/api\/accounts\/[^/]+\/source$/.test(path)){const a=requireAccount(path.split('/')[3]);const refs=a.reference_id?all('SELECT * FROM refs WHERE id=?',a.reference_id):all('SELECT * FROM refs WHERE account_id=?',a.id);const posts=refs.flatMap(r=>all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC',r.id));return json(res,200,{text:sourceDocument(a,refs,posts),fetched_count:posts.length});}
+ if(method==='POST'&&path==='/api/device-source'){
+  const b=await body(req),username=String(b.username||'').toLowerCase();const a=row('SELECT * FROM accounts WHERE lower(username)=?',username);if(!a)fail(404,'先にサーバーに同じXアカウントを登録してください');
+  const reference=String(b.reference||'').replace(/^@/,'');if(!/^[A-Za-z0-9_]{1,15}$/.test(reference))fail(400,'お手本IDを確認してください');
+  const posts=Array.isArray(b.reference_posts)?b.reference_posts:[];if(posts.length>10000)fail(400,'投稿件数が多すぎます');
+  for(const post of posts)if(!/^\d{1,25}$/.test(String(post.id||''))||typeof post.text!=='string'||post.text.length>10000)fail(400,'参考投稿の形式を確認してください');
+  db.exec('BEGIN');try{
+   let ref=row('SELECT * FROM refs WHERE lower(username)=?',reference.toLowerCase());if(!ref){const id=uid();run('INSERT INTO refs(id,username,account_id) VALUES(?,?,?)',id,reference,a.id);ref={id};}
+   for(const post of posts)run('INSERT OR REPLACE INTO ref_posts(id,ref_id,text,posted_at) VALUES(?,?,?,?)',post.id,ref.id,post.text,post.at||null);
+   run("UPDATE refs SET fetched_at=datetime('now'),account_id=? WHERE id=?",a.id,ref.id);
+   run("UPDATE accounts SET reference_id=?,reference_ids=?,config_revision=config_revision+1,updated_at=datetime('now') WHERE id=?",ref.id,JSON.stringify([ref.id]),a.id);
+   db.exec('COMMIT');
+  }catch(e){db.exec('ROLLBACK');throw e}return json(res,200,{ok:true,count:posts.length});
+ }
  if(method==='GET'&&path.startsWith('/api/assets/')){const asset=row('SELECT * FROM assets WHERE id=?',path.slice(12));if(!asset)fail(404,'画像なし');const download=new URL(req.url,'http://localhost').searchParams.has('download');res.writeHead(200,{'content-type':asset.mime,'cache-control':'private, max-age=300','x-content-type-options':'nosniff',...(download?{'content-disposition':`attachment; filename="${asset.filename}"`}:{})});return res.end(await readFile(join(dataDir,'assets',asset.filename)))}
  if(method==='POST'&&path==='/api/accounts'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'XのIDを確認してください');const id=uid();run('INSERT INTO accounts(id,username,display_name,character_name,bio) VALUES(?,?,?,?,?)',id,username,String(b.display_name||username).slice(0,80),String(b.character_name||b.display_name||username).slice(0,80),`架空のAIキャラクター｜${String(b.character_name||username).slice(0,60)}`);return json(res,201,{id})}
  let m=path.match(/^\/api\/accounts\/([^/]+)$/);
- if(m&&method==='PATCH'){const current=requireAccount(m[1]);const b=await body(req);const keys=['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images'];const values=Object.fromEntries(keys.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(Object.hasOwn(values,'enabled'))values.enabled=values.enabled===true?1:0;if(Object.hasOwn(values,'auto_approve'))values.auto_approve=values.auto_approve===true?1:0;if(Object.hasOwn(values,'auto_generate_images')){if(values.auto_generate_images===true)fail(400,'画像生成は端末のGrokで行います');values.auto_generate_images=0;}if(!/AI/i.test(String(values.bio??current.bio))||!/(架空|バーチャル)/.test(String(values.bio??current.bio)))fail(400,'プロフィールに架空のAIキャラクターである旨を記載してください');if(String(values.bio??current.bio).length>160)fail(400,'プロフィールは160文字以内にしてください');if(values.age!=null&&values.age<18)fail(400,'キャラクターの年齢は18歳以上にしてください');if(values.activity_interval_days!=null){values.activity_interval_days=Number(values.activity_interval_days);if(!Number.isInteger(values.activity_interval_days)||values.activity_interval_days<1||values.activity_interval_days>365)fail(400,'浮上頻度は1〜365日の整数で設定してください');}if(values.enabled&&!current.session_cipher)fail(400,'先にX接続をしてください');if(values.auto_approve&&!(values.enabled??current.enabled))fail(400,'自動承認には運用ONが必要です');if(!Object.keys(values).length)fail(400,'変更項目がありません');if(values.bio!=null&&values.bio!==current.bio&&current.session_cipher){try{await x.ensureBio(decrypt(current.session_cipher),current.username,String(values.bio))}catch(e){fail(502,'Xプロフィールを更新できませんでした: '+e.message)}}run(`UPDATE accounts SET ${Object.keys(values).map(k=>k+'=?').join(',')},updated_at=datetime('now') WHERE id=?`,...Object.values(values).map(v=>v??''),m[1]);return json(res,200,{ok:true})}
+ if(m&&method==='PATCH'){const current=requireAccount(m[1]);const b=await body(req);const keys=['reference_id','use_reference_timing','server_generate','custom_instructions','reference_ids','display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images'];const values=Object.fromEntries(keys.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(Object.hasOwn(values,'use_reference_timing'))values.use_reference_timing=values.use_reference_timing===true?1:0;if(Object.hasOwn(values,'server_generate')){values.server_generate=values.server_generate===true?1:0;if(values.server_generate&&process.env.SERVER_GROK!=='1')fail(400,'サーバーGrokを先に設定してください');}if(values.reference_id&&!row('SELECT 1 FROM refs WHERE id=?',values.reference_id))fail(400,'お手本を確認してください');if(Object.hasOwn(values,'custom_instructions')){if(typeof values.custom_instructions!=='string'||values.custom_instructions.length>8000)fail(400,'カスタム指示は8000文字以内にしてください');}
+ if(Object.hasOwn(values,'reference_ids')){if(!Array.isArray(values.reference_ids)||values.reference_ids.length>8||values.reference_ids.some(id=>typeof id!=='string'||!row('SELECT id FROM refs WHERE id=?',id)))fail(400,'お手本アカウントは登録済みのものを8件まで選択してください');values.reference_ids=JSON.stringify([...new Set(values.reference_ids)]);}
+ if(Object.hasOwn(values,'enabled'))values.enabled=values.enabled===true?1:0;if(Object.hasOwn(values,'auto_approve'))values.auto_approve=values.auto_approve===true?1:0;if(Object.hasOwn(values,'auto_generate_images')){if(values.auto_generate_images===true)fail(400,'画像生成は端末のGrokで行います');values.auto_generate_images=0;}if(!/AI/i.test(String(values.bio??current.bio))||!/(架空|バーチャル)/.test(String(values.bio??current.bio)))fail(400,'プロフィールに架空のAIキャラクターである旨を記載してください');if(String(values.bio??current.bio).length>160)fail(400,'プロフィールは160文字以内にしてください');if(values.age!=null&&values.age<18)fail(400,'キャラクターの年齢は18歳以上にしてください');if(values.activity_interval_days!=null){values.activity_interval_days=Number(values.activity_interval_days);if(!Number.isInteger(values.activity_interval_days)||values.activity_interval_days<1||values.activity_interval_days>365)fail(400,'浮上頻度は1〜365日の整数で設定してください');}if(values.enabled&&!current.session_cipher)fail(400,'先にX接続をしてください');if(values.auto_approve&&!(values.enabled??current.enabled))fail(400,'自動承認には運用ONが必要です');if(!Object.keys(values).length)fail(400,'変更項目がありません');if(values.bio!=null&&values.bio!==current.bio&&current.session_cipher){try{await x.ensureBio(decrypt(current.session_cipher),current.username,String(values.bio),xTransport)}catch(e){fail(502,'Xプロフィールを更新できませんでした: '+e.message)}}run(`UPDATE accounts SET ${Object.keys(values).map(k=>k+'=?').join(',')},config_revision=config_revision+1,updated_at=datetime('now') WHERE id=?`,...Object.values(values).map(v=>v??''),m[1]);return json(res,200,{ok:true})}
  if(m&&method==='DELETE'){requireAccount(m[1]);db.exec('BEGIN');try{run('DELETE FROM drafts WHERE account_id=?',m[1]);run('DELETE FROM accounts WHERE id=?',m[1]);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return json(res,200,{ok:true})}
  m=path.match(/^\/api\/accounts\/([^/]+)\/connect$/);
- if(m&&method==='POST'){const a=requireAccount(m[1]),b=await body(req,16384);let result;try{if(b.cookies){result={cookies:String(b.cookies),who:await x.verify(String(b.cookies))}}else if(b.password){result=await x.login(a.username,String(b.password),String(b.email||''))}else fail(400,'Xパスワードまたはログイン済みCookieを入力してください')}catch(e){if(e.status)throw e;fail(502,'Xログインに失敗しました: '+String(e.message||e).slice(0,220))}if(result.who?.username?.toLowerCase()!==a.username.toLowerCase())fail(400,`接続先が @${a.username} ではありません`);try{await x.ensureBio(result.cookies,a.username,a.bio)}catch(e){fail(502,'XプロフィールのAI表記を設定できませんでした: '+e.message)}run("UPDATE accounts SET session_cipher=?,session_status='connected',updated_at=datetime('now') WHERE id=?",encrypt(result.cookies),a.id);return json(res,200,{username:a.username,transport:'xactions-session'})}
+ if(m&&method==='POST'){const a=requireAccount(m[1]),b=await body(req,16384);let result;try{if(b.cookies){result={cookies:String(b.cookies),who:await x.verify(String(b.cookies),xTransport)}}else if(b.password){result=await x.login(a.username,String(b.password),String(b.email||''),xTransport)}else fail(400,'Xパスワードまたはログイン済みCookieを入力してください')}catch(e){if(e.status)throw e;fail(502,'Xログインに失敗しました: '+String(e.message||e).slice(0,220))}if(result.who?.username?.toLowerCase()!==a.username.toLowerCase())fail(400,`接続先が @${a.username} ではありません`);try{await x.ensureBio(result.cookies,a.username,a.bio,xTransport)}catch(e){fail(502,'XプロフィールのAI表記を設定できませんでした: '+e.message)}run("UPDATE accounts SET session_cipher=?,session_status='connected',updated_at=datetime('now') WHERE id=?",encrypt(result.cookies),a.id);return json(res,200,{username:a.username,transport:'xactions-session'})}
  m=path.match(/^\/api\/accounts\/([^/]+)\/disconnect$/);
  if(m&&method==='POST'){requireAccount(m[1]);run("UPDATE accounts SET session_cipher=NULL,enabled=0,session_status='unconnected' WHERE id=?",m[1]);return json(res,200,{ok:true})}
  if(method==='POST'&&path==='/api/refs'){const b=await body(req),username=String(b.username||'').replace(/^@/,'').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(username))fail(400,'IDを確認してください');const id=uid();run('INSERT INTO refs(id,username) VALUES(?,?)',id,username);return json(res,201,{id})}
  m=path.match(/^\/api\/refs\/([^/]+)$/);
  if(m&&method==='DELETE'){run('DELETE FROM refs WHERE id=?',m[1]);return json(res,200,{ok:true})}
  m=path.match(/^\/api\/refs\/([^/]+)\/fetch$/);
- if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const b=await body(req),a=requireAccount(b.account_id);if(!a.session_cipher)fail(400,'取得用のXアカウントを接続してください');const limit=Math.min(5000,Math.max(20,Number(b.limit)||500));const job=addJob(a.id,'fetch',async()=>{const {profile,posts}=await x.collect(decrypt(a.session_cipher),ref.username,limit);const insert=db.prepare('INSERT OR REPLACE INTO ref_posts(id,ref_id,text,posted_at,metrics_json,media_json) VALUES(?,?,?,?,?,?)');db.exec('BEGIN');try{for(const p of posts)if(p.id&&p.text)insert.run(p.id,ref.id,p.text,p.createdAt||null,JSON.stringify(p.metrics||{}),JSON.stringify(p.media||[]));run("UPDATE refs SET display_name=?,account_id=?,fetched_at=datetime('now') WHERE id=?",profile.name||ref.username,a.id,ref.id);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return `${posts.length}件取得`});return json(res,202,{job})}
+ if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const b=await body(req),a=requireAccount(b.account_id);if(!a.session_cipher)fail(400,'取得用のXアカウントを接続してください');const limit=Math.min(5000,Math.max(20,Number(b.limit)||500));const job=addJob(a.id,'fetch',async()=>{const {profile,posts}=await x.collect(decrypt(a.session_cipher),ref.username,limit,xTransport);const insert=db.prepare('INSERT OR REPLACE INTO ref_posts(id,ref_id,text,posted_at,metrics_json,media_json) VALUES(?,?,?,?,?,?)');db.exec('BEGIN');try{for(const p of posts)if(p.id&&p.text)insert.run(p.id,ref.id,p.text,p.createdAt||null,JSON.stringify(p.metrics||{}),JSON.stringify(p.media||[]));run("UPDATE refs SET display_name=?,account_id=?,fetched_at=datetime('now') WHERE id=?",profile.name||ref.username,a.id,ref.id);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return `${posts.length}件取得`});return json(res,202,{job})}
  m=path.match(/^\/api\/refs\/([^/]+)\/analyze$/);
- if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const posts=all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 120',ref.id);if(!posts.length)fail(400,'先に投稿を取得してください');return json(res,200,{mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:ai.analysisPrompt(ref,posts)})}
+ if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const posts=all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 500',ref.id);if(!posts.length)fail(400,'先に投稿を取得してください');return json(res,200,{mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:ai.analysisPrompt(ref,posts)})}
  m=path.match(/^\/api\/refs\/([^/]+)\/analyze\/import$/);
  if(m&&method==='POST'){const ref=row('SELECT * FROM refs WHERE id=?',m[1]);if(!ref)fail(404,'参考アカウントがありません');const b=await body(req,65536);let summary;try{summary=ai.parseAnalysisResult(b.result)}catch(e){fail(400,e.message)}run('UPDATE refs SET summary=? WHERE id=?',summary,ref.id);return json(res,200,{ok:true})}
  if(method==='GET'&&path==='/api/ref-posts'){const refId=new URL(req.url,'http://localhost').searchParams.get('ref_id');return json(res,200,{posts:all('SELECT * FROM ref_posts WHERE ref_id=? ORDER BY posted_at DESC LIMIT 500',refId||'')})}
@@ -188,9 +258,9 @@ const server=http.createServer(async(req,res)=>{try{
  if(m&&method==='DELETE'){const a=row('SELECT * FROM assets WHERE id=?',m[1]);if(!a)fail(404,'画像なし');run('DELETE FROM assets WHERE id=?',a.id);await unlink(join(dataDir,'assets',a.filename)).catch(()=>{});return json(res,200,{ok:true})}
  if(method==='POST'&&path==='/api/generate-week'){const b=await body(req),a=requireAccount(b.account_id);const count=Math.min(21,Math.max(1,Number(b.count)||Number(a.posting_frequency)||7));return json(res,200,{mode:'device_grok',kind:'weekly',...buildWeekPack(a,count)})}
  if(method==='POST'&&path==='/api/generate-week/import'){const b=await body(req,512*1024),a=requireAccount(b.account_id);const dates=Array.isArray(b.dates)?b.dates.map(String):[];const count=Math.min(21,Math.max(1,Number(b.count)||Number(a.posting_frequency)||7));let result;try{result=importWeekPack(a,b.result,dates,count)}catch(e){fail(400,e.message)}return json(res,201,result)}
- if(method==='POST'&&path==='/api/drafts'){const b=await body(req),a=requireAccount(b.account_id);if(!String(b.text||'').trim()||String(b.text).length>280)fail(400,'投稿文を280文字以内で入力してください');const id=uid(),style=photoCategories.has(b.image_style)?b.image_style:null,text=String(b.text).trim();run('INSERT INTO drafts(id,account_id,text,scheduled_at,image_style,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,b.account_id,text,b.scheduled_at||null,style,ai.imagePrompt(a,{text,image_style:style},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC")),fingerprintPost(text));return json(res,201,{id})}
+ if(method==='POST'&&path==='/api/drafts'){const b=await body(req),a=requireAccount(b.account_id);if(!String(b.text||'').trim()||String(b.text).length>280)fail(400,'投稿文を280文字以内で入力してください');const id=uid(),style=photoCategories.has(b.image_style)?b.image_style:null,text=String(b.text).trim();run('INSERT INTO drafts(id,account_id,text,scheduled_at,image_style,image_prompt,content_fingerprint) VALUES(?,?,?,?,?,?,?)',id,b.account_id,text,validatedDate(b.scheduled_at),style,ai.imagePrompt(a,{text,image_style:style},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC")),fingerprintPost(text));return json(res,201,{id})}
  m=path.match(/^\/api\/drafts\/([^/]+)$/);
- if(m&&method==='PATCH'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review'&&d.status!=='scheduled')fail(409,'先に投稿状況を確認してください');const b=await body(req),allowed=['text','scheduled_at','image_style','image_prompt'];const changes=Object.fromEntries(allowed.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(changes.text!=null&&(!String(changes.text).trim()||String(changes.text).length>280))fail(400,'投稿文を280文字以内で入力してください');if(changes.text!=null){changes.text=String(changes.text).trim();changes.content_fingerprint=fingerprintPost(changes.text)}if(changes.image_style&&!photoCategories.has(changes.image_style))fail(400,'画像カテゴリが不正です');if(changes.image_prompt!=null&&String(changes.image_prompt).length>5000)fail(400,'画像プロンプトは5000文字以内にしてください');const styleChanged=Object.hasOwn(changes,'image_style')&&(changes.image_style||null)!==(d.image_style||null),oldImageId=styleChanged?d.image_id:null;if(styleChanged)changes.image_id=null;if(Object.hasOwn(changes,'image_style')&&!changes.image_style){changes.image_style=null;changes.image_prompt=''}else if((Object.hasOwn(changes,'text')||Object.hasOwn(changes,'image_style'))&&!Object.hasOwn(changes,'image_prompt'))changes.image_prompt=ai.imagePrompt(requireAccount(d.account_id),{...d,...changes},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));if(!Object.keys(changes).length)fail(400,'変更項目がありません');run(`UPDATE drafts SET ${Object.keys(changes).map(k=>`${k}=?`).join(',')},status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',attempt_count=0,error=NULL,updated_at=datetime('now') WHERE id=?`,...Object.values(changes),d.id);await removeUploadedAssetIfUnused(oldImageId);return json(res,200,{ok:true})}
+ if(m&&method==='PATCH'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review'&&d.status!=='scheduled')fail(409,'先に投稿状況を確認してください');const b=await body(req),allowed=['text','scheduled_at','image_style','image_prompt'];const changes=Object.fromEntries(allowed.filter(k=>Object.hasOwn(b,k)).map(k=>[k,b[k]]));if(changes.text!=null&&(!String(changes.text).trim()||String(changes.text).length>280))fail(400,'投稿文を280文字以内で入力してください');if(changes.text!=null){changes.text=String(changes.text).trim();changes.content_fingerprint=fingerprintPost(changes.text)}if(changes.image_style&&!photoCategories.has(changes.image_style))fail(400,'画像カテゴリが不正です');if(changes.image_prompt!=null&&String(changes.image_prompt).length>5000)fail(400,'画像プロンプトは5000文字以内にしてください');if(Object.hasOwn(changes,'scheduled_at'))changes.scheduled_at=validatedDate(changes.scheduled_at);const styleChanged=Object.hasOwn(changes,'image_style')&&(changes.image_style||null)!==(d.image_style||null),oldImageId=styleChanged?d.image_id:null;if(styleChanged)changes.image_id=null;if(Object.hasOwn(changes,'image_style')&&!changes.image_style){changes.image_style=null;changes.image_prompt=''}else if((Object.hasOwn(changes,'text')||Object.hasOwn(changes,'image_style'))&&!Object.hasOwn(changes,'image_prompt'))changes.image_prompt=ai.imagePrompt(requireAccount(d.account_id),{...d,...changes},all("SELECT * FROM assets WHERE kind='style' ORDER BY created_at DESC"));if(!Object.keys(changes).length)fail(400,'変更項目がありません');run(`UPDATE drafts SET ${Object.keys(changes).map(k=>`${k}=?`).join(',')},status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',attempt_count=0,error=NULL,updated_at=datetime('now') WHERE id=?`,...Object.values(changes),d.id);await removeUploadedAssetIfUnused(oldImageId);return json(res,200,{ok:true})}
  if(m&&method==='DELETE'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');if(d.status!=='needs_review'&&d.status!=='scheduled')fail(409,'先に投稿状況を確認してください');run('DELETE FROM drafts WHERE id=?',d.id);await removeUploadedAssetIfUnused(d.image_id);return json(res,200,{ok:true})}
  m=path.match(/^\/api\/drafts\/([^/]+)\/schedule$/);
  if(m&&method==='POST'){const d=row('SELECT * FROM drafts WHERE id=?',m[1]);if(!d)fail(404,'投稿なし');const b=await body(req),a=requireAccount(d.account_id);if(!a.session_cipher||!a.enabled)fail(400,'X接続と運用ONが必要です');const date=new Date(b.scheduled_at||d.scheduled_at);if(!Number.isFinite(date.getTime())||date.getTime()<Date.now()+60000)fail(400,'予約日時は1分以上先にしてください');if(d.image_style&&!d.image_id)fail(400,'画像が未設定です。先に投稿画像をアップロードしてください');if(d.status!=='needs_review')fail(409,'予約できない状態です');const fp=ensureNoQueuedDuplicate(d);run("UPDATE drafts SET status='scheduled',scheduled_at=?,content_fingerprint=?,queue_key=?,attempt_count=0,next_attempt_at=NULL,last_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=datetime('now') WHERE id=?",date.toISOString(),fp,uid(),d.id);return json(res,200,{ok:true})}

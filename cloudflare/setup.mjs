@@ -4,13 +4,21 @@ import {readFile,writeFile} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {validExitConfig,verifiedGateway} from '../exit-policy.mjs';
+import {selectCloudflareAccount} from './account-policy.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const configPath=join(here,'wrangler.toml');
 const urlPath=join(here,'.setup-url');
 const wrangler=['--yes','wrangler@4'];
 const doctor=process.argv.includes('--doctor');
+const egressUrl=String(process.env.X_EGRESS_URL||'').trim();
+const egressToken=String(process.env.X_EGRESS_TOKEN||'');
+const exitMode=process.env.X_EXIT_MODE||'warp';
+const exitIP=process.env.X_EXIT_IP||'';
+const exitCountry=process.env.X_EXIT_COUNTRY||'JP';
 const nodeMajor=Number(process.versions.node.split('.')[0]);
+let selectedAccountId='';
 if(!Number.isInteger(nodeMajor)||nodeMajor<24){
  console.error('[X-Nekama] Node.js 24以上が必要です。現在: '+process.versions.node);
  process.exit(1);
@@ -20,6 +28,7 @@ function run(args,{allowFailure=false,input=null,quiet=false}={}){
  return new Promise((resolve,reject)=>{
   const child=spawn('npx',[...wrangler,...args],{
    cwd:here,
+   env:{...process.env,...(selectedAccountId?{CLOUDFLARE_ACCOUNT_ID:selectedAccountId}:{})},
    stdio:['pipe','pipe','pipe'],
    shell:process.platform==='win32'
   });
@@ -83,6 +92,13 @@ async function ensureLogin(){
  who=await run(['whoami','--json'],{quiet:true});
  return parseJson(who.out||who.err);
 }
+function pinAccount(identity){
+ const saved=requireText(configPath).match(/^account_id\s*=\s*"([^"]+)"/m)?.[1]||'';
+ const account=selectCloudflareAccount(identity,{requested:process.env.CLOUDFLARE_ACCOUNT_ID||'',saved});
+ selectedAccountId=account.id;
+ note(`配置先: ${account.name||account.id} (${account.id})`);
+ return account;
+}
 async function ensureD1(name){
  let info=await run(['d1','info',name,'--json'],{allowFailure:true,quiet:true});
  if(info.code!==0){
@@ -109,8 +125,9 @@ async function ensureQueue(name){
  const created=await run(['queues','create',name],{allowFailure:true});
  if(created.code!==0&&!/already|exists|created/i.test(created.all))throw Object.assign(new Error(`Queue作成失敗: ${name}`),{result:created});
 }
-function renderConfig({worker,dbName,dbId,bucket,queue,dlq}){
+function renderConfig({worker,dbName,dbId,bucket,queue,dlq,egressUrl}){
  return `name = "${worker}"
+account_id = "${selectedAccountId}"
 main = "src/index.mjs"
 compatibility_date = "2026-09-27"
 compatibility_flags = ["nodejs_compat"]
@@ -146,6 +163,12 @@ max_concurrency = 4
 [triggers]
 crons = ["* * * * *"]
 
+[vars]
+X_EGRESS_URL = "${egressUrl.replace(/\\/g,'\\\\').replace(/"/g,'\\\"')}"
+X_EXIT_MODE = "${exitMode}"
+X_EXIT_IP = "${exitIP}"
+X_EXIT_COUNTRY = "${exitCountry}"
+
 `;
 }
 async function copyText(text){
@@ -165,6 +188,22 @@ async function copyText(text){
  }
  return false;
 }
+function requireEgressConfig(){
+ if(!['warp','shared'].includes(exitMode)||!/^[A-Z]{2}$/.test(exitCountry)||((exitMode==='shared'||exitIP)&&!validExitConfig(exitIP,exitCountry)))throw new Error('共通出口用の X_EXIT_MODE=shared、X_EXIT_IP、X_EXIT_COUNTRY を設定してください');
+ if(!egressUrl)throw new Error('X_EGRESS_URL が必要です。VPN接続済み中継の https://.../fetch を設定してください');
+ if(egressToken.length<24)throw new Error('X_EGRESS_TOKEN は24文字以上で設定し、egress側と同じ値を使ってください');
+ const parsed=new URL(egressUrl);
+ if(parsed.protocol!=='https:')throw new Error('X_EGRESS_URL はHTTPSで公開してください');
+ return {url:parsed.toString(),token:egressToken};
+}
+async function egressHealth(url,token,options={mode:exitMode,ip:exitIP,country:exitCountry}){
+ const healthUrl=new URL(url);
+ healthUrl.pathname=healthUrl.pathname.replace(/\/fetch\/?$/,'/healthz');
+ const response=await fetch(healthUrl,{headers:{'x-xnekama-egress-token':token,'accept':'application/json'},redirect:'error',signal:AbortSignal.timeout(3000)});
+ if(!response.ok)throw new Error(`VPN中継が接続済みとして応答しません: HTTP ${response.status}`);
+ const data=await response.json().catch(()=>({}));
+ if(!verifiedGateway(data,options))throw new Error('VPN egressの接続または固定出口IP・国を確認できません');
+}
 async function health(url){
  const response=await fetch(url+'/api/auth',{headers:{accept:'application/json'}});
  if(!response.ok)throw new Error(`公開URLの疎通確認に失敗しました: HTTP ${response.status}`);
@@ -173,18 +212,23 @@ async function health(url){
 }
 async function doctorRun(){
  note('診断モード');
- await ensureLogin();
+ pinAccount(await ensureLogin());
  if(!existsSync(configPath))throw new Error('wrangler.toml がありません。先に node setup.mjs を実行してください');
  const config=await readFile(configPath,'utf8');
  const db=config.match(/database_name\s*=\s*"([^"]+)"/)?.[1];
  const bucket=config.match(/bucket_name\s*=\s*"([^"]+)"/)?.[1];
  const queue=config.match(/\nqueue\s*=\s*"([^"]+)"/)?.[1];
  const baseUrl=existsSync(urlPath)?(await readFile(urlPath,'utf8')).trim():'';
- if(!db||!bucket||!queue||!baseUrl)throw new Error('設定が不完全です。先に node setup.mjs を実行してください');
+ const configuredEgress=config.match(/X_EGRESS_URL\s*=\s*"([^"]+)"/)?.[1];
+ if(!db||!bucket||!queue||!baseUrl||!configuredEgress)throw new Error('設定が不完全です。先に node setup.mjs を実行してください');
  await run(['d1','info',db,'--json'],{quiet:true});
  await run(['r2','bucket','info',bucket,'--json'],{quiet:true});
  const queues=await run(['queues','list'],{quiet:true});
  if(!queues.all.includes(queue))throw new Error('Queueが見つかりません');
+ const secrets=await run(['secret','list','--config',configPath],{quiet:true});
+ if(!secrets.all.includes('X_EGRESS_TOKEN'))throw new Error('X_EGRESS_TOKEN Secretが見つかりません');
+ if(egressToken.length>=24)await egressHealth(configuredEgress,egressToken,{mode:config.match(/X_EXIT_MODE\s*=\s*"([^"]+)"/)?.[1]||'warp',ip:config.match(/X_EXIT_IP\s*=\s*"([^"]*)"/)?.[1]||'',country:config.match(/X_EXIT_COUNTRY\s*=\s*"([^"]+)"/)?.[1]||'JP'});
+ else note('X_EGRESS_TOKENが実行環境にないためVPN出口の実接続は未確認です。');
  await health(baseUrl);
  note(`OK: ${baseUrl}`);
 }
@@ -192,8 +236,12 @@ async function main(){
  await loadExisting();
  if(doctor)return doctorRun();
  note('Cloudflare完全自動セットアップを開始');
+ const egress=requireEgressConfig();
+ note('VPN egressの接続と出口設定を確認');
+ await egressHealth(egress.url,egress.token);
+
  const identity=await ensureLogin();
- const accountName=identity?.accounts?.[0]?.name||identity?.account?.name||'Cloudflare';
+ const accountName=pinAccount(identity).name||'Cloudflare';
  note(`ログイン確認: ${accountName}`);
 
  const id=slug();
@@ -208,13 +256,15 @@ async function main(){
  await ensureQueue(queue);
  await ensureQueue(dlq);
 
- await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq}));
+ await writeFile(configPath,renderConfig({worker,dbName,dbId,bucket,queue,dlq,egressUrl:egress.url}));
  note('D1 migrationを適用');
  await run(['d1','migrations','apply',dbName,'--remote','--config',configPath]);
 
- note('Workerをデプロイ');
+ note('Workerを初回デプロイ');
  const deployed=await run(['deploy','--config',configPath]);
  const url=workerUrl(deployed.all);
+ note('VPN egress認証Secretを設定');
+ await run(['secret','put','X_EGRESS_TOKEN','--config',configPath],{input:egress.token+'\n',quiet:true});
  if(!url)throw new Error('Workers公開URLを自動取得できませんでした。deploy出力を確認してください');
  await writeFile(urlPath,url+'\n');
 
@@ -226,9 +276,9 @@ async function main(){
   ${url}
 ${copied?'\nURLをクリップボードへコピーしました。':''}
 
-このURLを改造Xの「✦ Nekama → Core URLを設定」へ入力してください。
+このURLを改造Xの「✦ Nekama → Cloudflare連携・接続先 → 作成済みサーバーに接続」へ入力してください。
 
-暗号鍵はWorkerがprivate R2内部に自動生成します。ユーザーがSecretを作る必要はありません。
+Xセッション暗号鍵はWorkerがprivate R2内部に自動生成します。X_EGRESS_TOKENだけはVPN egressとの共有Secretとして必要です。
 
 再診断:
   node setup.mjs --doctor

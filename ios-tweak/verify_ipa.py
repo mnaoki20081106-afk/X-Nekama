@@ -18,6 +18,8 @@ REQUIRED_METHODS = {
             "initWithAccount:initialText:onAcceptRevision:": "@40@0:8@16@24@?32",
         },
         "T1TweetComposeViewController": {
+            "initWithAccount:compositions:inWindowScene:": "@36@0:8@16@24B32",
+            "_t1_didTapSendButton:": "v24@0:8@16",
             "account": "@16@0:8",
             "activeComposition": "@16@0:8",
             "t1_activeTweetViewController": "@16@0:8",
@@ -25,6 +27,10 @@ REQUIRED_METHODS = {
             "_t1_syncAIDisclosureForComposition:": "v24@0:8@16",
             "setGrokImagineLightboxManager:": "v24@0:8@16",
             "grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:": "v40@0:8@16@24@32",
+        },
+        "T1UnifiedNotificationsSettingsViewController": {
+            "initWithAccount:": "@24@0:8@16",
+            "account": "@16@0:8",
         },
         "T1TweetComposeSingleTweetViewController": {
             "reloadCompositionText": "v16@0:8",
@@ -35,8 +41,10 @@ REQUIRED_METHODS = {
         "TFNTwitterAccount": {
             "accountID": "@16@0:8",
             "username": "@16@0:8",
+            "authenticatedMutableURLRequestForURLRequest:parameters:error:": "@40@0:8@16@24^@32",
         },
         "TFNTwitterComposition": {
+            "initWithInitialText:mentionedUsers:": "@32@0:8@16@24",
             "text": "@16@0:8",
             "setText:": "v24@0:8@16",
             "addAttachment:": "v24@0:8@16",

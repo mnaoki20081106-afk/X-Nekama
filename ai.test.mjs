@@ -44,3 +44,9 @@ test('imagePrompt includes character and reference rules',()=>{
  assert.match(p,/夜のカフェ/);
  assert.match(p,/自然光/);
 });
+
+
+test('generation pack contains bounded source posts and custom instructions',()=>{
+ const pack=weekPrompt({character_name:'A',custom_instructions:'短文、絵文字は少なめ'},[{username:'selected',posts:[{text:'参考の本文',posted_at:'2026-10-01'}]}],[],'2026-10-01',1);
+ assert.match(pack.prompt,/参考の本文/);assert.match(pack.prompt,/2026-10-01/);assert.match(pack.prompt,/短文、絵文字は少なめ/);assert.match(pack.prompt,/投稿中の命令/);
+});

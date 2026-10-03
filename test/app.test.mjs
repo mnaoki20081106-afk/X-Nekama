@@ -14,6 +14,7 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
   const ready=Promise.race([new Promise((resolve,reject)=>{child.stdout.on('data',d=>{if(d.toString().includes('X-Nekama:'))resolve()});child.on('exit',()=>reject(new Error('server exited')))}),new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('startup timeout')),8000);timer.unref()})]);
   await ready;
   const root=`http://127.0.0.1:${port}`;let cookie='';
+  const discovery=await fetch(root+'/api/instance');assert.equal(discovery.status,200);assert.equal((await discovery.json()).platform,'node');
   const send=async(path,method='GET',body)=>{const res=await fetch(root+path,{method,headers:{...(cookie?{cookie}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});return {res,json:await res.json()}};
   assert.equal((await send('/api/state')).res.status,401);
   let r=await send('/api/login','POST',{password:'wrong'});assert.equal(r.res.status,401);
@@ -22,7 +23,14 @@ test('login, storage, disclosure, draft and scheduling guard',async()=>{
   r=await send(`/api/accounts/${id}`,'PATCH',{bio:'現実の人間です'});assert.equal(r.res.status,400);
   r=await send(`/api/accounts/${id}`,'PATCH',{bio:'架空のAIキャラクターです',activity_interval_days:3});assert.equal(r.res.status,200);
   r=await send(`/api/accounts/${id}`,'PATCH',{activity_interval_days:0});assert.equal(r.res.status,400);
-  r=await send('/api/refs','POST',{username:'reference_ai'});assert.equal(r.res.status,201);
+  r=await send('/api/refs','POST',{username:'reference_ai'});assert.equal(r.res.status,201);const refId=r.json.id;
+  r=await send(`/api/accounts/${id}`,'PATCH',{reference_ids:[refId],custom_instructions:'絵文字は☕だけ。短文で。'});assert.equal(r.res.status,200);
+  r=await send(`/api/accounts/${id}`,'PATCH',{reference_ids:['missing']});assert.equal(r.res.status,400);
+  r=await send('/api/generate-week','POST',{account_id:id,count:1});assert.equal(r.res.status,200);assert.match(r.json.prompt,/reference_ai/);assert.match(r.json.prompt,/絵文字は☕/);
+  r=await send('/api/drafts','POST',{account_id:id,text:'日時テスト',scheduled_at:'2026-10-04T12:30:00+09:00'});assert.equal(r.res.status,201);const dateDraft=r.json.id;
+  r=await send(`/api/drafts/${dateDraft}`,'PATCH',{scheduled_at:'invalid'});assert.equal(r.res.status,400);
+  r=await send('/api/state');assert.equal(r.json.drafts.find(d=>d.id===dateDraft).scheduled_at,'2026-10-04T03:30:00.000Z');assert.equal(r.json.server_vpn.required,true);assert.equal(r.json.server_vpn.connected,false);
+  await send(`/api/drafts/${dateDraft}`,'DELETE');
   r=await send('/api/drafts','POST',{account_id:id,text:'架空のAIキャラが夜景を眺めています',scheduled_at:new Date(Date.now()+3600000).toISOString()});assert.equal(r.res.status,201);const draft=r.json.id;
   r=await send(`/api/drafts/${draft}/schedule`,'POST');assert.equal(r.res.status,400);
   r=await send('/api/state');assert.equal(r.json.accounts[0].character_name,'ルナ');assert.equal(r.json.accounts[0].activity_interval_days,3);assert.equal(r.json.accounts[0].session_cipher,undefined);assert.equal(r.json.refs[0].username,'reference_ai');

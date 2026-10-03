@@ -55,6 +55,8 @@ if (!accountColumns().some(c=>c.name==='gender')) db.exec("ALTER TABLE accounts 
 if (!accountColumns().some(c=>c.name==='occupation')) db.exec("ALTER TABLE accounts ADD COLUMN occupation TEXT DEFAULT ''");
 if (!accountColumns().some(c=>c.name==='first_person')) db.exec("ALTER TABLE accounts ADD COLUMN first_person TEXT DEFAULT ''");
 if (!accountColumns().some(c=>c.name==='activity_interval_days')) db.exec("ALTER TABLE accounts ADD COLUMN activity_interval_days INTEGER DEFAULT 1");
+for(const [name,sql] of [['custom_instructions',"TEXT DEFAULT ''"],['reference_id',"TEXT DEFAULT ''"],['server_generate','INTEGER DEFAULT 0'],['generation_next_at',"TEXT DEFAULT ''"],['generation_error',"TEXT DEFAULT ''"],['config_revision','INTEGER DEFAULT 0'],['use_reference_timing','INTEGER DEFAULT 1']])
+ if(!accountColumns().some(c=>c.name===name))db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${sql}`);
 const draftColumns=()=>db.prepare('PRAGMA table_info(drafts)').all();
 if (!draftColumns().some(c=>c.name==='image_prompt')) db.exec("ALTER TABLE drafts ADD COLUMN image_prompt TEXT DEFAULT ''");
 if (!draftColumns().some(c=>c.name==='content_fingerprint')) db.exec("ALTER TABLE drafts ADD COLUMN content_fingerprint TEXT DEFAULT ''");
@@ -68,3 +70,11 @@ export const row=(sql,...args)=>db.prepare(sql).get(...args);
 export const all=(sql,...args)=>db.prepare(sql).all(...args);
 export const run=(sql,...args)=>db.prepare(sql).run(...args);
 export const publicAccount=(a)=>a&&Object.fromEntries(Object.entries(a).filter(([k])=>k!=='session_cipher'));
+
+if(!accountColumns().some(c=>c.name==='custom_instructions'))db.exec("ALTER TABLE accounts ADD COLUMN custom_instructions TEXT DEFAULT ''");
+if(!accountColumns().some(c=>c.name==='reference_ids'))db.exec("ALTER TABLE accounts ADD COLUMN reference_ids TEXT DEFAULT '[]'");
+// Previous imports persisted JST offsets; SQL compares queue timestamps as text.
+for(const draft of all('SELECT id,scheduled_at FROM drafts WHERE scheduled_at IS NOT NULL')){
+ const date=new Date(draft.scheduled_at);
+ if(Number.isFinite(date.getTime())&&date.toISOString()!==draft.scheduled_at)run('UPDATE drafts SET scheduled_at=? WHERE id=?',date.toISOString(),draft.id);
+}

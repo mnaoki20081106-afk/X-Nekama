@@ -2,7 +2,11 @@
 
 一般公開向けの **任意バックエンド** です。
 
+配布時は各利用者自身のCloudflareへ配置し、そのWorker URLをアプリへ連携します。[個人アカウント連携](../docs/PERSONAL_CLOUDFLARE_JA.md) に公式配置フローとPCセットアップをまとめています。
+
 Cloudflare版もX DeveloperやxAI APIを使いません。
+
+端末と投稿側の出口を固定IPv4へ揃える場合は、[共通VPN出口の設定](../docs/SHARED_EXIT_JA.md)を利用してください。`X_EXIT_MODE=shared`・固定IP・国コードをWorkerと中継で一致させます。各Xリクエスト前に中継の出口を確認し、未確認の場合は投稿を待機させます。Workersとは別のVPN中継・出口が必要です。
 
 ## 役割
 

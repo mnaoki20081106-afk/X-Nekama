@@ -1,135 +1,89 @@
-# X-Nekama iOS tweak layer
+# X-Nekama iOS layer
 
-X公式iOSアプリの投稿ComposerへX-Nekamaの入口を追加するTheos tweakです。
+X 12.29（build 20）の復号済みIPA向けの文章中心の前面自動運用です。SideStoreで再署名するIPAを作成できます。
 
-## 検証対象
+## サーバー予約管理
 
-2026-09-27に提供された復号済みIPAを実バイナリから解析しています。
+初回は5手順のセットアップガイドを表示します。Cloudflareの公式配置・VPN中継設定・URL確認・X接続まで順番に案内し、進行位置を保存します。接続先メニューから再開・読み直しできます。実際のサーバー配置や投稿成功を自動で完了扱いにはしません。
 
-- App: X
-- Version: 12.29 (build 20)
-- Bundle ID: `com.atebits.Tweetie2`
-- Minimum iOS: 15.0
-- Main binary: arm64
-- Main binary: `LC_ENCRYPTION_INFO_64 cryptid 0`
+投稿画面の `✦` →「Cloudflare連携・接続先 → 作成済みサーバーに接続」でHTTPSの管理画面URLを保存し、「投稿予約・カレンダー・生成設定」から開きます。カレンダー、口調・絵文字・カスタム指示、お手本投稿を管理できます。サーバーに承認済みの予約は端末を閉じても送信します。VPN付きLinuxサーバーの準備とX Webセッションの接続が別途必要です。詳細は `docs/SERVER_VPN_JA.md`。
 
-### X 12.29で実在確認できた接続点
+既存の端末自動運用は前面限定です。サーバー管理画面を開くと端末側の自動運用を停止します。今回の変更はサーバーの配置やVPN設定、SideStore実機の動作確認まで完了したものではありません。
 
-`XAppLibraries.framework` / `XServiceLibraries.framework` のMach-Oシンボル・文字列から次を確認済みです。
+## 実装した流れ
 
-- `T1ComposerThreadViewController`
-- `Grok.GrokImagineComposerButton` / `_TtC4Grok25GrokImagineComposerButton`
-- `Grok.GrokImagineComposerToolbarButton` / `_TtC4Grok32GrokImagineComposerToolbarButton`
-- `Grok.GrokImagineComposePromptInput`
-- `Grok.GrokImaginePresentationManager`
-- `Grok.GrokImagineImageGenSession`
-- `Grok.GrokImagineSessionManager`
-- `grokImagineComposePromptInputDidSubmit:`
-- `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:`
-- `grok_composer_imagine_is_enabled`
-- `grok_imagine_composer_enabled`
-- `grokPostComposerEnabled`
-- `GROK_POST_COMPOSER_ENHANCE_USER_POST`
-- `postComposerTextGen`
-- `postComposerImageGen`
-- `postComposerImageGenWithPrompt`
-- `https://www.x.com/i/grok?text=`
-- `twitter://grok`
-- `xai-grok://imagine`
+1. Xの投稿画面の `✦` →「文章中心の自動運用」を開く。
+2. お手本の `@ID` とキャラクターの口調・趣味などを保存する。
+3. App Store版WARPを別途インストールし、1.1.1.1モードではなくWARPを接続する。
+4. 「お手本の投稿を取得」でX自身のプロフィール画面を開く。実際のProfileTimeline応答から著者の投稿を保存し、返却されたカーソルでページ送りする。
+5. 「自動運用を開始」。内蔵Grokを使い、取得した履歴から広く抽出したサンプルを参考に独自の短文を作る。初回、ネイティブのスタイルが見つからない場合だけGrok画面でスタイルを選択する。
+6. 生成完了を読み取り、長さ・完全一致のコピー・履歴との重複をチェックして保存する。
+7. 投稿間隔を取得した履歴の時刻から推定する。低頻度の運用ではお手本の投稿時間帯も参考にする。
+8. 投稿時刻になったらX自身のComposerから送信し、返却された本文・著者・投稿IDで結果を確認する。
 
-以前の試作にあった以下の名前は、提供IPAから存在確認できなかったため現在の実装では使用しません。
+画像生成・有料xAI API・共有AIキーはこのモードでは使いません。既存Core/Web版の機能は別の経路として残っています。
 
-- `T1GrokTextPostComposerController`
-- `T1GrokImagePostComposerContainer`
-- `GrokAPIClient`
-- `T1TweetComposeViewController`
-- `TFNTwitterComposition`
-- `twitter://imagine`
-- `_t1_openGrokImagineViewControllerWithInitialPrompt:`
+## 必ず区別すること
 
-## 現在の実装
+**実装・ビルド確認済みであり、実機での一連の動作は未検証です。** SideStore再署名後のログイン、内蔵Grokの利用資格、SwiftUIの実行時の反映、ProfileTimelineの応答形、OAuth再署名、CreateTweetの返却形は実機で確認が必要です。動かない経路を確認済みとして扱わず、状態画面へ理由を表示します。
 
-private Frameworkへ静的リンクせず、Objective-C runtimeでComposerを検出します。
+- アプリを前面で開いている間に動作します。バックグラウンドへ移行すると停止します。
+- 取得対象はXがログイン中の利用者へ返した著者本人の投稿・返信です。返却されない過去投稿、削除投稿、閲覧権限のない投稿は取得できません。分析へ送るサンプルは最大60件です。
+- 「終端に到達」は返却ページの終端であり、過去の全投稿の取得保証ではありません。通信障害・カーソル反復・次ページ経路不明は中断として表示します。
+- 429、利用上限、Grokへの追加ログイン、認証変更を回避・強制解除しません。
+- 投稿結果不明の場合は端末再起動後も自動再送しません。Xで確認し、「投稿されていた／されていなかった」を選んで解除します。
+- 運用ONは自動で復元しません。設定、参考投稿、履歴、未確認の送信状態だけ保存します。
 
-Composer判定は:
+## 通知管理
 
-- `ComposerThreadViewController` / `TweetCompose` 系クラス名
-- `TweetComposeSingleTweetViewControllerProtocol` への適合
+投稿画面の `✦` →「通知を管理（DM・返信中心）」から、交流向けの設定案内と、現在の投稿アカウントのX純正通知設定画面を開けます。「設定 → プッシュ通知」でDM・返信をON、いいね・リポスト・新規フォロワー・おすすめなどをOFFにしてください。複数アカウントは各アカウントで設定します。メンションと返信が共通の項目なら、メンションも残ります。
 
-を実行時に確認します。
+この追加は純正設定画面への導線です。一括自動変更・通知一覧の除外・独自のバックグラウンド通知遮断は行いません。設定案内を開いただけでは変更済みと扱いません。X 12.29 (20) の `T1UnifiedNotificationsSettingsViewController.initWithAccount:` をIPAから確認し、互換性チェックを追加しました。未対応の場合は純正設定への手順を表示します。SideStore再署名後のプッシュ受信と画面動作は実機未確認です。
 
-Composer画面には右下に `✦` Nekamaボタンを追加します。
+## VPN接続の確認
 
-### Grokで投稿文を作る
+**共通出口モード**では、別途WireGuardアプリへ端末用設定を取り込み、ロック画面または✦の「共通VPN出口を設定」で投稿側と同じ固定IPv4・国コードを保存します。HTTPS traceのIP・国とutunが一致しなければXを表示せず、観測した通信も保留します。設定変更は以前の接続確認を失効させます。[配置手順](../docs/SHARED_EXIT_JA.md)を参照してください。初期状態は以下の通常WARPモードです。
 
-まず現在のComposer/子ViewController/UIControlから `postComposerTextGen` を実行時探索し、X自身のネイティブGrok投稿文生成が見つかった場合だけそれを起動します。見つからない場合に限り、X 12.29自身に含まれる `https://www.x.com/i/grok?text=` ルートへフォールバックします。存在確認できていないprivate initializerは呼びません。
+**WARPのバイナリは同梱していません。** 提供されたWARP 6.31.6のVPN拡張機能は `packet-tunnel-provider`、CloudflareのApp Group、CloudflareのKeychain Access Groupを使います。拡張機能のコピーだけではXの署名・共有領域・登録処理に移せず、SideStoreの再署名で権限が維持される保証もありません。
 
-### Grokで画像を作る
+WARP接続を確認するまでX全体の画面を黒いロック画面で覆います。ロック画面の接続スイッチはWARPを開く導線で、WARP側でONにしてXへ戻ります。Xから他アプリが作ったVPN設定を直接ONにする処理や自動ONはありません。スイッチ表示だけで接続済みとは扱いません。
 
-まず `postComposerImageGenWithPrompt` / `postComposerImageGen` を現在のComposer・子Controller・UIControl target-actionから実行時探索します。見つからない場合は現在のComposerのView hierarchyから、X自身の
+HTTPSのCloudflare trace（HTTP 200、最終URL一致、`warp=on/plus`）と稼働中のutunの両方で確認します。確認の有効期間は単調時計で4秒、再確認は2秒間隔・3秒タイムアウト、画面監視は0.25秒間隔です。起動、復帰、ネットワーク経路変更時は過去の確認を失効し、確認中・失敗・期限切れはロックします。バックグラウンド移行前も覆います。保存設定でVPN必須を解除できません。
 
-- `GrokImagineComposerButton`
-- `GrokImagineComposerToolbarButton`
+観測したNSURLSessionTaskのresumeは確認済みの間だけ許可し、未確認時は送信せず保留します。接続確認用の専用traceリクエストだけ例外です。WARP確認後、保留中で未キャンセルのタスクをresumeするため、起動直後に止めた読込みも自動復帰させます。
 
-を検索します。実際に表示されているネイティブボタンが見つかった場合だけ `UIControlEventTouchUpInside` を送って起動します。
+**実機未検証で、OS全体のキルスイッチではありません。** 既に送信中の通信、NSURLSession以外のソケット、判定の間に起こる切断、別経路やスプリットトンネルによる通信漏れゼロは保証できません。traceでWARPが確認できてもX宛て通信すべてが同じ経路を通ることの証明ではありません。Xの画面を表示しない動作と通信漏れゼロを区別します。IP偽装ヘッダーは追加していません。
 
-ボタンがFeature Flagなどで存在しない場合は、Grokルーターへ画像生成指示を渡すフォールバックに切り替えます。
+## 実バイナリで確認した接続点
 
-### ランタイム診断
+- `T1GrokTextPostComposerController initWithAccount:initialText:onAcceptRevision:`
+- `T1GrokTextPostComposerController` の `viewModel` ivar
+- `GrokComposeViewModel.startCompose(originalText:style:)` のexportとarm64呼出規約
+- `GrokComposeViewModel.cancelAll()` のexport
+- `GrokComposeRevisionViewModel` の `originalText`, `style`, `_revisionChatItem`
+- ChatItemの `status`, `text`, `isPartial`, `errorMessage`
+- `TFNTwitterAccount authenticatedMutableURLRequestForURLRequest:parameters:error:`
+- `TFNTwitterComposition initWithInitialText:mentionedUsers:`
+- `T1TweetComposeViewController initWithAccount:compositions:inWindowScene:`
+- `T1TweetComposeViewController _t1_didTapSendButton:`
 
-Nekamaメニューの「ランタイム診断」で以下を表示できます。
+以前のREADMEでこれらの一部を「存在しない」としていた説明を訂正しました。今回のIPAから実在を確認しています。固定メモリオフセットは使わず、実行時のメソッド型・ivar・Swift reflectionとexportを使います。Xのバージョンは12.29（20）に限定します。
 
-- Xのバージョン/build
-- 実際にフックされたComposer class
-- Grok Imagine関連classの存在
-- 現在Composer上にあるネイティブImagine button
-- `grokImagineComposePromptInputDidSubmit:` 実装class
-- `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` 実装class
-- `postComposerTextGen` / `postComposerImageGen` / `postComposerImageGenWithPrompt` 実装class
+## Build / test
 
-X更新時はこの診断結果を基準に追従します。
-
-
-## 実運用モード（推奨）
-
-X 12.29 の内部Grok実装はアップデートで変更される可能性があるため、実運用の既定経路は **X-Nekama Core + xAI公式API** です。
-
-Composer上の `✦` ボタンから:
-
-1. `X-Nekama Coreを開く`
-2. 初回だけCore URLを設定
-3. 同じXアプリ内のSafariシートで管理画面を開く
-4. Grok 4.7で投稿文生成
-5. Grok Imagineで画像生成
-6. X-Nekamaの永続キューへ予約
-7. X投稿
-
-X内蔵Grokのruntime連携は `（実験）` 表記にし、利用可能なネイティブUIが存在する場合だけ起動します。Feature Flagや認証条件を強制解除しません。
-
-この分離により、XのGrok内部クラスやselectorが変わっても、Core側の生成・画像・予約・投稿エンジンは継続して利用できます。
-
-## Build
-
-Theosを用意して:
+TheosとiOS 16.5 SDK、Swift対応toolchain、cyan（pyzule-rw）を用意してください。
 
 ```sh
 cd ios-tweak
-make clean
-make package
+IPA_PATH=/absolute/path/X.ipa ./build.sh --sidestore
 ```
 
-GitHub Actionsの `iOS Tweak Build` でも `.deb` を生成します。
+`--sidestore` はWatchアプリと既存のApp Extensionsを除外し、X-Nekama.dylibを注入します。IPA本体やユーザーの署名情報はGitへ追加しません。
 
-IPAへ注入する場合は、利用者が用意した復号済みIPAへ `XNekama.dylib` を組み込み、利用者自身の署名環境で再署名します。X公式IPA本体はこのリポジトリには保存しません。
+```sh
+swiftc -module-name Grok NativeGrok.swift tests/NativeGrokTests.swift -o /tmp/native-grok-tests
+/tmp/native-grok-tests
+python3 verify_ipa.py /absolute/path/X.ipa
+```
 
-## 次の段階
-
-1. 実機でNekamaボタンとX内蔵Imagine起動を確認
-2. ランタイム診断からX 12.29の実Composer classを確定
-3. `postComposerTextGen` が実機Composer上で起動することを確認し、生成結果の反映経路を観測
-4. Grok文章生成結果を同じComposerへ戻す経路を実バイナリ/実機イベントから確定
-5. `grokImaginePresentationManagerAttachmentDidAdd:asset:withPrompt:` を観測し、画像生成完了をNekama Coreへ同期
-6. アカウント別Persona・顔・スマホケース・お手本画像をNekama Coreと接続
-7. 投稿キューとComposerを接続
-
-存在確認できていないprivate API名を推測で追加しない方針です。
+Node/Web側の回帰テストはリポジトリルートで `npm test`。iOS Tweak BuildでもSwiftの結果読み取りテストを実行します。

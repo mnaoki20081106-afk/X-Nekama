@@ -68,6 +68,24 @@ export class ErrorRateLimitStrategy {
 // TwitterHttpClient
 // ---------------------------------------------------------------------------
 
+/**
+ * A response body as JSON. A success with no body (204, or X's upload APPEND
+ * step) is `{}`: parsing it as JSON would fail, and the retry that followed
+ * would send the write a second time.
+ *
+ * @param {Response} res
+ * @returns {Promise<object>}
+ */
+async function readBody(res) {
+  if (res.status === 204 || res.status === 205) return {};
+  if (typeof res.text === 'function') {
+    const text = await res.text();
+    if (!text.trim()) return {};
+    return JSON.parse(text);
+  }
+  return (await res.json?.()) ?? {};
+}
+
 export class TwitterHttpClient {
   /**
    * @param {object} [options]
@@ -249,19 +267,26 @@ export class TwitterHttpClient {
    * @param {string} url
    * @param {object} [options]
    * @param {string} [options.method='GET']
-   * @param {object|string} [options.body]
+   * @param {object|string|URLSearchParams|FormData} [options.body] An object is
+   *   sent as JSON, URLSearchParams as a form, FormData as multipart.
    * @param {object} [options.headers]
    * @param {boolean} [options.authenticated=true]
-   * @returns {Promise<object>} Parsed JSON
+   * @returns {Promise<object>} Parsed JSON; `{}` for a success with no body
    */
   async request(url, options = {}) {
     const method = options.method || 'GET';
     const authenticated = options.authenticated !== false;
     const headers = { ...this._buildHeaders(authenticated), ...options.headers };
-    const body =
-      options.body && typeof options.body !== 'string'
-        ? JSON.stringify(options.body)
-        : options.body;
+    let body = options.body;
+    if (body instanceof URLSearchParams) {
+      headers['content-type'] = 'application/x-www-form-urlencoded';
+      body = body.toString();
+    } else if (typeof FormData !== 'undefined' && body instanceof FormData) {
+      // fetch writes the multipart boundary into the content type itself.
+      delete headers['content-type'];
+    } else if (body && typeof body !== 'string') {
+      body = JSON.stringify(body);
+    }
 
     const callerSigned = Boolean(headers['x-client-transaction-id']);
 
@@ -305,7 +330,7 @@ export class TwitterHttpClient {
           throw new NotFoundError('Resource not found', { status: 404, endpoint: url });
         }
 
-        const json = await res.json?.() ?? {};
+        const json = await readBody(res);
 
         if (res.status >= 400) {
           throw new TwitterApiError(`HTTP ${res.status}`, { status: res.status, endpoint: url, data: json });
@@ -372,7 +397,9 @@ export class TwitterHttpClient {
     try {
       return await this._graphqlOnce(resolvedId, operationName, variables, features, isMutation);
     } catch (err) {
-      if (!this._autoRefreshQueryIds || !this._isStaleQueryIdFailure(err)) throw err;
+      // A write may have reached X even when its response is an error. Query-ID
+      // recovery is safe for reads, but must never silently replay a mutation.
+      if (isMutation || !this._autoRefreshQueryIds || !this._isStaleQueryIdFailure(err)) throw err;
       const freshId = await this._refreshedQueryId(operationName);
       if (!freshId || freshId === resolvedId) throw err;
       if (this._debug) {

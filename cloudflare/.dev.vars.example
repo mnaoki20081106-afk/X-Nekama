@@ -1,4 +1,3 @@
-# Copy to .dev.vars for local development only.
-# Never commit .dev.vars.
-# Base64url/base64 encoded 32 random bytes.
-TOKEN_ENCRYPTION_KEY=
+# Local development only. Do not commit .dev.vars.
+# Use the same 24+ character Secret as your VPN gateway.
+X_EGRESS_TOKEN=

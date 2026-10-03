@@ -1,12 +1,23 @@
 import * as xactions from '../../x.mjs';
 import * as localAI from '../../ai.mjs';
+import {contextReviewReason} from '../../context-policy.mjs';
+import {verifiedGateway} from '../../exit-policy.mjs';
+import {instanceInfo} from '../instance-info.mjs';
 import {writeFile,unlink} from 'node:fs/promises';
+import {createRemoteEgressFetch,VpnEgressError} from '../../egress.mjs';
 
 const SESSION_COOKIE='nk_session';
 const SESSION_DAYS=30;
 const MAX_IMAGE_BYTES=5*1024*1024;
 const textEncoder=new TextEncoder();
 const textDecoder=new TextDecoder();
+
+function xTransport(env){
+  const endpoint=String(env.X_EGRESS_URL||'').trim();
+  const token=String(env.X_EGRESS_TOKEN||'');
+  if(!endpoint||token.length<24)throw new VpnEgressError('VPN egress is not configured');
+  return {fetch:createRemoteEgressFetch({endpoint,token,exitMode:env.X_EXIT_MODE||'warp',expectedIP:env.X_EXIT_IP||'',expectedCountry:env.X_EXIT_COUNTRY||'JP'})};
+}
 
 const json=(data,status=200,headers={})=>new Response(JSON.stringify(data),{
   status,
@@ -122,24 +133,24 @@ function publicAccount(a){
   copy.session_status='connected';
   return copy;
 }
-async function resolveXSession(body){
+async function resolveXSession(body,env){
   const cookies=String(body.cookies||'').trim();
   if(cookies){
-    const who=await xactions.verify(cookies);
+    const who=await xactions.verify(cookies,xTransport(env));
     return {who,cookies};
   }
   const username=String(body.username||'').replace(/^@/,'').trim();
   const password=String(body.password||'');
   const email=String(body.email||'').trim();
   if(!username||!password)throw Object.assign(new Error('x_login_required'),{status:400});
-  const result=await xactions.login(username,password,email);
+  const result=await xactions.login(username,password,email,xTransport(env));
   return {who:result.who,cookies:result.cookies};
 }
 async function connectXSession(request,env){
   const current=await sessionUser(request,env);
   const body=await readJson(request,32768);
   let resolved;
-  try{resolved=await resolveXSession(body)}
+  try{resolved=await resolveXSession(body,env)}
   catch(error){
     const message=String(error?.message||error);
     if(/two-factor|2FA|captcha|verification|LoginAcid/i.test(message)){
@@ -176,7 +187,7 @@ async function connectXSession(request,env){
   const character=account?.character_name||who.name||who.username;
   const bio=account?.bio||`架空のAIキャラクター｜${character}`;
   try{
-    await xactions.ensureBio(resolved.cookies,who.username,bio);
+    await xactions.ensureBio(resolved.cookies,who.username,bio,xTransport(env));
   }catch(error){
     throw Object.assign(new Error('x_profile_disclosure_failed'),{status:400});
   }
@@ -229,6 +240,15 @@ async function audit(env,ownerId,kind,objectId=null){
   await env.DB.prepare('INSERT INTO audit_events(id,owner_id,kind,object_id) VALUES(?,?,?,?)').bind(uid(),ownerId||null,kind,objectId).run();
 }
 
+async function gatewayState(env){
+ try{
+  if(!env.X_EGRESS_URL||String(env.X_EGRESS_TOKEN||'').length<24)throw Error('サーバーVPNゲートウェイが未設定です。');
+  const url=new URL(env.X_EGRESS_URL);url.pathname=url.pathname.replace(/\/fetch\/?$/,'/healthz');
+  const r=await fetch(url,{headers:{'x-xnekama-egress-token':env.X_EGRESS_TOKEN},redirect:'error',signal:AbortSignal.timeout(3000)});
+  const data=await r.json();if(r.status!==200||!verifiedGateway(data,{mode:env.X_EXIT_MODE||'warp',ip:env.X_EXIT_IP||'',country:env.X_EXIT_COUNTRY||'JP'}))throw Error('サーバーVPNまたは共通出口の確認待ちです。');
+  return {required:true,connected:true,mode:data.mode||'warp',ip:data.ip,country:data.country,message:data.mode==='shared'?`共通VPN出口確認済み (${data.ip} / ${data.country})`:'サーバーWARP接続済み'};
+ }catch(e){return {required:true,connected:false,message:e.message||'VPN接続を確認できません。'}}
+}
 async function stateResponse(env,user){
   const [accounts,refs,assets,drafts,jobs]=await Promise.all([
     env.DB.prepare('SELECT * FROM accounts WHERE owner_id=? ORDER BY created_at DESC').bind(user.id).all(),
@@ -246,13 +266,19 @@ async function stateResponse(env,user){
     jobs:jobs.results,
     configured:true,
     generation_mode:'device_grok',
-    auth_mode:'x_session'
+    auth_mode:'x_session',server_vpn:await gatewayState(env),scheduler_mode:'server_vpn'
   });
 }
-const accountFields=new Set(['display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images']);
+const accountFields=new Set(['custom_instructions','reference_ids','display_name','character_name','age','gender','occupation','location','tone','first_person','personality','hobbies','bio','emoji_style','ng_topics','posting_frequency','activity_interval_days','active_hours','enabled','auto_approve','auto_generate_images']);
 async function patchAccount(request,env,user,id){
   const current=await ownedAccount(env,user.id,id),body=await readJson(request,65536),values={};
   for(const [key,value] of Object.entries(body))if(accountFields.has(key))values[key]=value;
+  if('custom_instructions'in values&&(typeof values.custom_instructions!=='string'||values.custom_instructions.length>8000))return problem(400,'カスタム指示は8000文字以内にしてください');
+  if('reference_ids'in values){
+   if(!Array.isArray(values.reference_ids)||values.reference_ids.length>8)return problem(400,'お手本は8件まで選択してください');
+   for(const id of values.reference_ids)if(typeof id!=='string'||!await env.DB.prepare('SELECT id FROM refs WHERE id=? AND owner_id=?').bind(id,user.id).first())return problem(400,'登録済みのお手本を選択してください');
+   values.reference_ids=JSON.stringify([...new Set(values.reference_ids)]);
+  }
   for(const key of ['enabled','auto_approve'])if(key in values)values[key]=values[key]===true?1:0;
   if('auto_generate_images'in values){if(values.auto_generate_images===true)return problem(400,'画像生成は端末のX/Grokで行います');values.auto_generate_images=0;}
   if('activity_interval_days'in values){
@@ -270,7 +296,7 @@ async function patchAccount(request,env,user,id){
   if('bio' in values && values.bio!==current.bio){
     try{
       const cookies=await accountSession(env,current);
-      await xactions.ensureBio(cookies,current.username,String(values.bio));
+      await xactions.ensureBio(cookies,current.username,String(values.bio),xTransport(env));
     }catch{
       return problem(502,'XプロフィールのAI表記を更新できませんでした');
     }
@@ -345,7 +371,7 @@ async function setDraftImageData(env,user,draft,data,name='投稿画像'){
 async function fetchReferencePosts(env,user,ref,account,requestedLimit){
   const limit=Math.min(500,Math.max(20,Number(requestedLimit)||100));
   const cookies=await accountSession(env,account);
-  const {profile,posts}=await xactions.collect(cookies,ref.username,limit);
+  const {profile,posts}=await xactions.collect(cookies,ref.username,limit,xTransport(env));
   const statements=(posts||[]).slice(0,limit).filter(p=>p?.id&&p?.text).map(p=>env.DB.prepare(`INSERT INTO ref_posts(id,owner_id,ref_id,text,posted_at,metrics_json,media_json)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner_id,ref_id,id) DO UPDATE SET text=excluded.text,posted_at=excluded.posted_at,metrics_json=excluded.metrics_json,media_json=excluded.media_json`)
     .bind(String(p.id),user.id,ref.id,String(p.text).slice(0,4000),p.createdAt||null,JSON.stringify(p.metrics||{}),JSON.stringify(p.media||[])));
@@ -355,7 +381,7 @@ async function fetchReferencePosts(env,user,ref,account,requestedLimit){
   return statements.length;
 }
 async function buildAnalysisPack(env,user,ref){
-  const rows=await env.DB.prepare('SELECT text,posted_at,media_json FROM ref_posts WHERE owner_id=? AND ref_id=? ORDER BY posted_at DESC LIMIT 120')
+  const rows=await env.DB.prepare('SELECT text,posted_at,media_json FROM ref_posts WHERE owner_id=? AND ref_id=? ORDER BY posted_at DESC LIMIT 500')
     .bind(user.id,ref.id).all();
   if(!rows.results.length)throw Object.assign(new Error('no_reference_posts'),{status:400});
   return {mode:'device_grok',kind:'analysis',ref_id:ref.id,prompt:localAI.analysisPrompt(ref,rows.results)};
@@ -401,7 +427,13 @@ async function scheduleDraft(request,env,user,id){
 }
 async function buildWeekPack(env,user,account,count){
   count=Math.min(21,Math.max(1,Number(count)||Number(account.posting_frequency)||7));
-  const refs=await env.DB.prepare('SELECT username,summary,fetched_at FROM refs WHERE owner_id=? ORDER BY fetched_at DESC LIMIT 8').bind(user.id).all();
+  const refs=[];
+  for(const id of JSON.parse(account.reference_ids||'[]')){
+   const ref=await env.DB.prepare('SELECT id,username,summary FROM refs WHERE id=? AND owner_id=?').bind(id,user.id).first();
+   if(!ref)continue;
+   const posts=await env.DB.prepare('SELECT text,posted_at FROM ref_posts WHERE ref_id=? AND owner_id=? ORDER BY posted_at DESC LIMIT 50').bind(id,user.id).all();
+   refs.push({...ref,posts:posts.results});
+  }
   const history=await env.DB.prepare('SELECT text FROM drafts WHERE owner_id=? AND account_id=? ORDER BY created_at DESC LIMIT 30').bind(user.id,account.id).all();
   const interval=Math.min(365,Math.max(1,Number(account.activity_interval_days)||1));
   const future=await env.DB.prepare(`SELECT scheduled_at FROM drafts WHERE owner_id=? AND account_id=? AND status IN ('needs_review','scheduled','publishing') AND scheduled_at IS NOT NULL`)
@@ -409,7 +441,7 @@ async function buildWeekPack(env,user,account,count){
   const futureTimes=future.results.map(x=>new Date(x.scheduled_at).getTime()).filter(t=>Number.isFinite(t)&&t>Date.now());
   const latest=futureTimes.length?Math.max(...futureTimes):null;
   const seed=latest?new Date(latest+(interval-1)*86400000).toISOString():new Date().toISOString();
-  const pack=localAI.weekPrompt(account,refs.results,history.results,seed,count);
+  const pack=localAI.weekPrompt(account,refs,history.results,seed,count);
   return {mode:'device_grok',kind:'weekly',account_id:account.id,count,prompt:pack.prompt,dates:pack.dates};
 }
 async function importWeekPack(env,user,account,input,dates,count){
@@ -452,13 +484,18 @@ async function buildImagePack(env,user,draft){
 async function publishDraft(env,draft){
   const account=await env.DB.prepare('SELECT * FROM accounts WHERE id=? AND owner_id=?').bind(draft.account_id,draft.owner_id).first();
   if(!account||!account.enabled)throw new Error('account disabled');
+  const contextError=contextReviewReason(draft.text);
+  if(contextError){
+    await env.DB.prepare("UPDATE drafts SET status='needs_review',queue_key=NULL,next_attempt_at=NULL,last_error_kind='context_review',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=? AND status='scheduled'").bind(contextError,draft.id,draft.owner_id).run();
+    return;
+  }
   const claimed=await env.DB.prepare(`UPDATE drafts SET status='publishing',attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND owner_id=? AND status='scheduled'`).bind(draft.id,draft.owner_id).run();
   if(!claimed.meta.changes)return;
   let tempPath=null;
   try{
     const cookies=await accountSession(env,account);
-    await xactions.checkBio(cookies,account.username);
+    await xactions.checkBio(cookies,account.username,xTransport(env));
     if(draft.image_id){
       const asset=await env.DB.prepare('SELECT * FROM assets WHERE id=? AND owner_id=?').bind(draft.image_id,draft.owner_id).first();
       if(!asset)throw Object.assign(new Error('image missing'),{deliveryStage:'upload'});
@@ -467,12 +504,19 @@ async function publishDraft(env,draft){
       tempPath=`/tmp/xnekama-${uid()}.${ext}`;
       await writeFile(tempPath,new Uint8Array(await object.arrayBuffer()));
     }
-    const postId=await xactions.publish(cookies,draft.text,tempPath,`架空AIキャラクター ${account.character_name} の生成画像`);
+    const postId=await xactions.publish(cookies,draft.text,tempPath,`架空AIキャラクター ${account.character_name} の生成画像`,xTransport(env));
     if(!postId)throw Object.assign(new Error('post id unavailable'),{deliveryStage:'submit'});
     await env.DB.prepare(`UPDATE drafts SET status='posted',x_post_id=?,posted_at=CURRENT_TIMESTAMP,next_attempt_at=NULL,last_error_kind='',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
       .bind(String(postId),draft.id,draft.owner_id).run();
     await audit(env,draft.owner_id,'draft_posted',draft.id);
   }catch(error){
+    if(error?.code==='VPN_REQUIRED'){
+      const next=futureIso(60000);
+      await env.DB.prepare(`UPDATE drafts SET status='scheduled',attempt_count=CASE WHEN attempt_count>0 THEN attempt_count-1 ELSE 0 END,
+        next_attempt_at=?,last_error_kind='vpn_required',error='WARP接続待ち',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
+        .bind(next,draft.id,draft.owner_id).run();
+      return;
+    }
     const attempt=Number(draft.attempt_count||0)+1;
     const status=Number(error?.status||error?.response?.status||0);
     const stage=error?.deliveryStage||'preflight';
@@ -519,6 +563,7 @@ async function queueMessage(env,message){
 }
 async function handleApi(request,env){
   const url=new URL(request.url),path=url.pathname,method=request.method;
+  if(path==='/api/instance'&&method==='GET')return json(instanceInfo(env));
   if((path==='/api/me'||path==='/api/auth')&&method==='GET'){
     const user=await sessionUser(request,env);return json({authenticated:!!user,mode:'x_session',user:user?{username:user.login_username}:null});
   }
@@ -684,6 +729,7 @@ export default {
       if(status===404)return problem(404,'見つかりません');
       if(status===413)return problem(413,'データが大きすぎます');
       if(status===409)return problem(409,'現在の状態では実行できません');
+      if(status===503||error?.code==='VPN_REQUIRED')return problem(503,'VPN egress が未設定、到達不能、またはWARP未接続です');
       if(status===400){
         if(error?.message==='cookie_login_required')return problem(400,'このXアカウントは追加認証が必要です。ログイン済みCookieで接続してください');
         if(error?.message==='x_account_mismatch')return problem(400,'選択したアカウントとXセッションが一致しません');

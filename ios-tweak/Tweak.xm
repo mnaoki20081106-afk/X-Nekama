@@ -3,6 +3,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
+#import "Autopilot.h"
+#import "VPNGate.h"
+#import "ServerManager.h"
 #include <string.h>
 
 static const void *kNXButtonKey = &kNXButtonKey;
@@ -14,7 +17,6 @@ static NSMutableSet<NSString *> *NXHookedGrokAttachmentClasses;
 static NSString *NXLastGrokAttachmentEvent;
 static NSString * const NXGrokAttachmentNotification =
     @"com.xnekama.grokImagineAttachmentDidAdd";
-static NSString * const NXCoreURLDefaultsKey = @"x-nekama.core-url";
 
 static NSString *NXClassName(id object) {
     return object ? NSStringFromClass(object_getClass(object)) : @"";
@@ -225,78 +227,68 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
 
 @interface NXNekamaHelper : NSObject
 @property(nonatomic, weak) UIViewController *composer;
+@property(nonatomic, weak) UINavigationController *notificationNavigation;
+- (void)openNotificationManagement;
 @end
 
 @implementation NXNekamaHelper
 
-- (NSURL *)validatedCoreURLFromString:(NSString *)value {
-    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (!trimmed.length) return nil;
-    NSURLComponents *components = [NSURLComponents componentsWithString:trimmed];
-    NSString *scheme = components.scheme.lowercaseString;
-    if (!components.host.length || !([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"])) {
-        return nil;
-    }
-    return components.URL;
+- (void)notificationSettingsUnavailable {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"通知設定を開けません"
+        message:@"このXの通知設定画面との互換性を確認できませんでした。Xの「設定とプライバシー → 通知 → 設定 → プッシュ通知」から変更してください。設定は変更していません。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+    [NXPresenter(self.composer) presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)configureCoreURL {
-    UIViewController *presenter = NXPresenter(self.composer);
-    if (!presenter) return;
+- (void)closeNotificationSettings {
+    [self.notificationNavigation dismissViewControllerAnimated:YES completion:nil];
+}
 
-    NSString *current = [NSUserDefaults.standardUserDefaults stringForKey:NXCoreURLDefaultsKey] ?: @"";
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"X-Nekama Core"
-                                            message:@"公開中のX-Nekama管理画面URLを設定してください。"
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"https://your-x-nekama.example";
-        field.text = current;
-        field.keyboardType = UIKeyboardTypeURL;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"キャンセル"
-                                             style:UIAlertActionStyleCancel
-                                           handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存"
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(__unused UIAlertAction *action) {
-        NSString *value = alert.textFields.firstObject.text ?: @"";
-        NSURL *url = [self validatedCoreURLFromString:value];
-        if (!url) {
-            UIAlertController *error =
-                [UIAlertController alertControllerWithTitle:@"URLを確認してください"
-                                                    message:@"http:// または https:// から始まるURLを入力してください。"
-                                             preferredStyle:UIAlertControllerStyleAlert];
-            [error addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                      style:UIAlertActionStyleDefault
-                                                    handler:nil]];
-            [NXPresenter(self.composer) presentViewController:error animated:YES completion:nil];
-            return;
-        }
-        [NSUserDefaults.standardUserDefaults setObject:url.absoluteString forKey:NXCoreURLDefaultsKey];
+- (void)openNativeNotificationSettings {
+    // Verified against the supplied X 12.29 (20) Objective-C metadata.
+    Class cls = NSClassFromString(@"T1UnifiedNotificationsSettingsViewController");
+    SEL initSelector = NSSelectorFromString(@"initWithAccount:");
+    SEL accountSelector = NSSelectorFromString(@"account");
+    Method initMethod = class_getInstanceMethod(cls,initSelector);
+    Method accountMethod = class_getInstanceMethod(self.composer.class,accountSelector);
+    if (!cls || ![cls isSubclassOfClass:UIViewController.class] || !initMethod || !accountMethod ||
+        strcmp(method_getTypeEncoding(initMethod),"@24@0:8@16") != 0 ||
+        strcmp(method_getTypeEncoding(accountMethod),"@16@0:8") != 0) {
+        [self notificationSettingsUnavailable]; return;
+    }
+    @try {
+        id account = ((id (*)(id,SEL))objc_msgSend)(self.composer,accountSelector);
+        if (!account) { [self notificationSettingsUnavailable]; return; }
+        UIViewController *settings = ((id (*)(id,SEL,id))objc_msgSend)([cls alloc],initSelector,account);
+        UIViewController *presenter = NXPresenter(self.composer);
+        if (!settings || !presenter) { [self notificationSettingsUnavailable]; return; }
+        UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:settings];
+        settings.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"閉じる" style:UIBarButtonItemStyleDone target:self action:@selector(closeNotificationSettings)];
+        navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+        self.notificationNavigation = navigation;
+        [presenter presentViewController:navigation animated:YES completion:nil];
+    } @catch (__unused NSException *exception) {
+        [self notificationSettingsUnavailable];
+    }
+}
+
+- (void)openNotificationManagement {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"通知を管理"
+        message:@"交流用のおすすめ設定\n\nON：ダイレクトメッセージ、返信\nOFF：いいね、リポスト、新規フォロワー、おすすめ、ニュース、スペース、フォロー先の投稿通知など\n\n次のX設定画面の「設定 → プッシュ通知」で切り替えてください。「@ポストと返信」が共通の項目ならメンションも残ります。複数アカウントはそれぞれ設定してください。\n\nこの案内を開いただけでは設定は変わりません。X内の通知一覧には影響せず、再署名IPAのプッシュ受信も実機確認が必要です。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Xの通知設定を開く" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self openNativeNotificationSettings];
     }]];
-    [presenter presentViewController:alert animated:YES completion:nil];
+    [alert addAction:[UIAlertAction actionWithTitle:@"iPhoneの通知許可を確認" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString] options:@{} completionHandler:nil];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"閉じる" style:UIAlertActionStyleCancel handler:nil]];
+    [NXPresenter(self.composer) presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)openCore {
-    UIViewController *presenter = NXPresenter(self.composer);
-    if (!presenter) return;
-
-    NSString *value = [NSUserDefaults.standardUserDefaults stringForKey:NXCoreURLDefaultsKey];
-    NSURL *url = [self validatedCoreURLFromString:value ?: @""];
-    if (!url) {
-        [self configureCoreURL];
-        return;
-    }
-
-    SFSafariViewController *browser = [[SFSafariViewController alloc] initWithURL:url];
-    browser.modalPresentationStyle = UIModalPresentationPageSheet;
-    [presenter presentViewController:browser animated:YES completion:nil];
-}
-
+- (void)configureCoreURL {NXServerManagerConnect(NXPresenter(self.composer));}
+- (void)openCore {NXAutopilotPauseForServer();NXServerManagerOpen(NXPresenter(self.composer));}
 
 - (void)askForPromptWithTitle:(NSString *)title
                   placeholder:(NSString *)placeholder
@@ -375,19 +367,34 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     if (!presenter) return;
     UIAlertController *menu =
         [UIAlertController alertControllerWithTitle:@"Nekama"
-                                            message:@"安定運用はX-Nekama Core（公式xAI API）を使用します。X内蔵Grok連携は実験機能です。"
+                                            message:@"予約日時・お手本・口調・絵文字は投稿予約の管理画面から設定できます。"
                                      preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"X-Nekama Coreを開く"
+    [menu addAction:[UIAlertAction actionWithTitle:@"端末で文章を生成・運用（前面のみ）"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        NXAutopilotOpen(NXPresenter(self.composer));
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"投稿予約・カレンダー・生成設定"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self openCore];
     }]];
 
-    [menu addAction:[UIAlertAction actionWithTitle:@"Core URLを設定"
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cloudflare連携・接続先"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
         [self configureCoreURL];
+    }]];
+
+    [menu addAction:[UIAlertAction actionWithTitle:@"通知を管理（DM・返信中心）"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        [self openNotificationManagement];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"共通VPN出口を設定" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NXVPNConfigure(NXPresenter(self.composer));
     }]];
 
     [menu addAction:[UIAlertAction actionWithTitle:@"X内蔵Grokで投稿文を作る（実験）"
@@ -543,6 +550,7 @@ static void NXComposerViewDidAppear(id self, SEL _cmd, BOOL animated) {
         ((void (*)(id, SEL, BOOL))original)(self, _cmd, animated);
     }
     if ([self isKindOfClass:UIViewController.class]) {
+        NXAutopilotSetComposer((UIViewController *)self);
         NXAttachButton((UIViewController *)self);
     }
 }
@@ -592,6 +600,7 @@ static void NXImageLoaded(__unused const struct mach_header *header, __unused in
 
 __attribute__((constructor)) static void NXBootstrap(void) {
     @autoreleasepool {
+        NXAutopilotInstall();
         NXOriginalViewDidAppear = [NSMutableDictionary dictionary];
         NXHookedClasses = [NSMutableSet set];
         NXOriginalGrokAttachmentDidAdd = [NSMutableDictionary dictionary];

@@ -1,4 +1,4 @@
-name: iOS Tweak Build
+name: iOS IPA Build
 
 on:
   push:
@@ -10,10 +10,19 @@ on:
       - "ios-tweak/**"
       - ".github/workflows/ios-tweak.yml"
   workflow_dispatch:
+    inputs:
+      build_ipa:
+        description: Build the complete SideStore IPA (requires GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: macos-15-intel
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -51,7 +60,88 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
 
+      - name: Test native Grok result handling
+        run: |
+          swiftc -module-name Grok ios-tweak/NativeGrok.swift ios-tweak/tests/NativeGrokTests.swift -o /tmp/native-grok-tests
+          /tmp/native-grok-tests
+
+      - name: Test VPN gate policy
+        run: |
+          c++ -std=c++11 ios-tweak/tests/VPNPolicyTests.cpp -o /tmp/vpn-policy-tests
+          /tmp/vpn-policy-tests
+
+      - name: Test IPA download and verification helpers
+        run: python3 -m unittest discover -s ios-tweak/tests -p 'test_*.py'
+
+      - name: Check complete IPA configuration
+        id: ipa
+        env:
+          DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
+          BUILD_IPA: ${{ github.event_name != 'workflow_dispatch' || inputs.build_ipa || github.event.inputs.build_ipa == '' }}
+        run: |
+          if [[ "$BUILD_IPA" != "true" ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Complete IPA build disabled for this run.' >> "$GITHUB_STEP_SUMMARY"
+          elif [[ -z "$DRIVE_CREDENTIALS" ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo '### Complete IPA setup required' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The tweak was built, but no IPA was produced. Add GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON and share only the source X.ipa with that service account. See docs/IPA_BUILD_JA.md.' >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+              echo '::error::Missing GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON; requested IPA cannot be built.'
+              exit 1
+            fi
+          else
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python for IPA packaging
+        if: steps.ipa.outputs.enabled == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install IPA packaging dependencies
+        if: steps.ipa.outputs.enabled == 'true'
+        run: |
+          python3 -m pip install 'google-auth==2.40.3' 'requests==2.32.5' 'https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip'
+
+      - name: Download private source IPA from Google Drive
+        if: steps.ipa.outputs.enabled == 'true'
+        env:
+          GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
+          X_IPA_DRIVE_FILE_ID: '1sjlSvgpnobrW0ycn-P-DYr7371HaIkGG'
+        run: python3 ios-tweak/download_source_ipa.py --output "$RUNNER_TEMP/X-source.ipa"
+
+      - name: Build complete SideStore IPA
+        if: steps.ipa.outputs.enabled == 'true'
+        env:
+          THEOS: ${{ github.workspace }}/theos
+          IPA_PATH: ${{ runner.temp }}/X-source.ipa
+        run: bash ios-tweak/build.sh --sidestore
+
+      - name: Write IPA checksum and build summary
+        if: steps.ipa.outputs.enabled == 'true'
+        run: |
+          cd ios-tweak/packages
+          shasum -a 256 X-Nekama-X12.29.ipa > X-Nekama-X12.29.ipa.sha256
+          echo '### Complete IPA ready' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download **X-Nekama-IPA** from this run’s Artifacts. Unzip it, then sign/install the IPA with SideStore.' >> "$GITHUB_STEP_SUMMARY"
+          echo "Source commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload complete IPA
+        if: steps.ipa.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: X-Nekama-IPA
+          path: |
+            ios-tweak/packages/X-Nekama-X12.29.ipa
+            ios-tweak/packages/X-Nekama-X12.29.ipa.sha256
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Upload tweak package
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: X-Nekama-tweak

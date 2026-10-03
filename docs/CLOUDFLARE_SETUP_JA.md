@@ -1,8 +1,10 @@
-# Cloudflare完全自動予約 — 初回セットアップ
+# Cloudflare完全自動予約 — 初回セットアップ（WARP egress必須）
 
 この機能は **完全自動の予約投稿が欲しい人だけ** 設定します。
 
 通常のX-Nekama利用、Grok文章生成、Grok画像生成にはCloudflareは不要です。
+
+予約投稿をサーバー側から実行する場合、X向け通信は直接Workerから出さず、**WARP接続済みのVPN egressホスト**を必ず経由します。先に `docs/VPN_EGRESS_JA.md` の手順で `https://.../fetch` を用意してください。
 
 ## 何が自動化される？
 
@@ -15,6 +17,8 @@
 - Queue作成
 - Dead Letter Queue作成
 - 予約投稿Cron設定
+- VPN egressのWARP接続確認
+- VPN egress共有SecretのWrangler Secret登録
 - Xセッション暗号化鍵を安全に生成
 - D1 migration
 - Workerデプロイ
@@ -23,19 +27,33 @@
 - 再デプロイ
 - 最終疎通確認
 
-**D1 IDをコピーしたり、R2 bindingを書いたり、暗号鍵を手で作る必要はありません。**
+**D1 IDをコピーしたり、R2 bindingを書いたり、Xセッション暗号鍵を手で作る必要はありません。** ただしVPN egressのURLと共有Secretは必要です。
 
 ## 必要なもの
 
 1. Cloudflareアカウント
 2. WindowsまたはMacのPC
 3. Node.js 24以上
+4. 常時起動できるWARP接続済みegressホスト
+5. egressのHTTPS URL（`https://.../fetch`）
+6. 24文字以上の `X_EGRESS_TOKEN`
 
 X DeveloperアカウントやxAI APIキーは不要です。
 
 ---
 
 # 一番簡単な方法
+
+## 0. VPN egressを起動
+
+`docs/VPN_EGRESS_JA.md` の手順でegressを起動し、次の2つを控えます。
+
+```text
+X_EGRESS_URL=https://vpn.example.com/fetch
+X_EGRESS_TOKEN=十分長いランダムSecret
+```
+
+`/healthz` が `{"ok":true,"warp":"verified"}` を返してからCloudflareセットアップへ進みます。
 
 ## 1. X-NekamaをPCへ保存
 
@@ -57,10 +75,23 @@ chmod +x setup-macos.command
 ./setup-macos.command
 ```
 
-またはWindows/macOS共通で:
+またはWindows/macOS共通で、egress設定を環境変数へ入れてから実行します。
+
+macOS/Linux:
 
 ```sh
 cd X-Nekama/cloudflare
+export X_EGRESS_URL='https://vpn.example.com/fetch'
+export X_EGRESS_TOKEN='共有Secret'
+node setup.mjs
+```
+
+PowerShell:
+
+```powershell
+cd X-Nekama/cloudflare
+$env:X_EGRESS_URL='https://vpn.example.com/fetch'
+$env:X_EGRESS_TOKEN='共有Secret'
 node setup.mjs
 ```
 
@@ -89,7 +120,7 @@ Wranglerは対応環境ではOSキーチェーンを使う安全なログイン�
   https://x-nekama-xxxx.example.workers.dev
 ```
 
-セットアップ成功時は、このURLを自動でクリップボードへコピーします。改造Xの **✦ Nekama → Core URLを設定** に貼り付けます。以後は **✦ Nekama → X-Nekama Coreを開く** から自分のCloudflare環境へ入れます。
+セットアップ成功時は、このURLを自動でクリップボードへコピーします。改造Xの **✦ Nekama → Cloudflare連携・接続先 → 作成済みサーバーに接続** に貼り付けます。以後は **✦ Nekama → 投稿予約・カレンダー・生成設定** から自分のCloudflare環境へ入れます。
 
 ---
 
@@ -180,6 +211,8 @@ node setup.mjs --doctor
 - Queue
 - 公開Worker URL
 - X-Nekama API応答
+- X_EGRESS_TOKEN Secretの存在
+- `X_EGRESS_TOKEN`を環境変数でも渡した場合はegressのWARP状態
 
 すべて正常なら:
 
@@ -233,7 +266,7 @@ node setup.mjs
 
 iOSのバックグラウンド制約により、アプリを閉じた状態で指定時刻ぴったりの予約投稿は保証できません。
 
-Cloudflare self-hostを設定すると、端末が閉じていても予約投稿を実行できます。
+Cloudflare self-hostとWARP egressを設定すると、端末が閉じていても予約投稿を実行できます。WARP未接続中は投稿せず、予約状態を維持して復旧後に再試行します。
 
 ---
 
@@ -270,7 +303,7 @@ Cloudflare自体の料金体系・無料枠はCloudflare側で変更される可
 
 # アンインストール/停止
 
-完全自動予約が不要になった場合、X-Nekamaアプリ側でCloudflare連携を解除すれば投稿要求は送られません。
+アプリ側の接続解除だけでは、サーバーへ保存した予約は停止しません。管理画面で予約を解除するか、Cloudflare側でCron/Queue/Workerを停止してください。
 
 Cloudflareリソース自体を削除する場合は、誤操作でデータを失わないよう**自動削除機能は用意していません**。
 Cloudflare Dashboardから本人が確認して削除してください。
