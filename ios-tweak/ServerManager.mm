@@ -1,5 +1,6 @@
 #import "ServerManager.h"
 #import "VPNGate.h"
+#import "SetupGuide.h"
 #import <WebKit/WebKit.h>
 
 static NSString *const NXServerURLKey=@"x-nekama.server-url";
@@ -27,9 +28,14 @@ static UIColor *NXServerBlue(void){return [UIColor colorWithRed:0.114 green:0.60
 }
 - (void)cancelVerification{self.connectionEpoch++;[self.probeSession invalidateAndCancel];self.probeSession=nil;}
 - (void)close{[self cancelVerification];[self.navigationController dismissViewControllerAnimated:YES completion:nil];}
-- (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];if(self.configureOnAppear){self.configureOnAppear=NO;[self configure];}}
+- (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];[self.navigationController setToolbarHidden:NO];if(self.configureOnAppear){self.configureOnAppear=NO;if([NSUserDefaults.standardUserDefaults stringForKey:NXServerURLKey].length||[NSUserDefaults.standardUserDefaults stringForKey:@"x-nekama.core-url"].length)[self configure];else [self showGuide];}}
+- (void)showGuide{
+ __weak NXServerController *weakSelf=self;
+ NXSetupGuideOpen(self.navigationController,^{[weakSelf enterURL];},^{if([NSUserDefaults.standardUserDefaults stringForKey:NXServerURLKey].length||[NSUserDefaults.standardUserDefaults stringForKey:@"x-nekama.core-url"].length)[weakSelf load];else [weakSelf enterURL];});
+}
 - (void)configure{
  UIAlertController *a=[UIAlertController alertControllerWithTitle:@"自分のCloudflareサーバー" message:@"Cloudflareの公式画面で自分のアカウントへ配置し、作成したWorkerのURLを連携します。Cloudflareへのログインはブラウザで行います。VPN中継の設定も必要です。" preferredStyle:UIAlertControllerStyleActionSheet];
+ [a addAction:[UIAlertAction actionWithTitle:@"セットアップガイド" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){[self showGuide];}]];
  [a addAction:[UIAlertAction actionWithTitle:@"Cloudflareでサーバーを作成" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){
   NSURL *url=[NSURL URLWithString:@"https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fmnaoki20081106-afk%2FX-Nekama%2Ftree%2Fcodex%2Fserver-calendar-vpn-20261003"];
   [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
@@ -68,6 +74,7 @@ static UIColor *NXServerBlue(void){return [UIColor colorWithRed:0.114 green:0.60
    if(epoch!=self.connectionEpoch)return;self.probeSession=nil;
    if(!NXVPNReady()||!valid){self.status.text=@"連携できませんでした。URL・デプロイ状態・VPNを確認してください。";[self message:self.status.text title:@"サーバー連携"];return;}
    [NSUserDefaults.standardUserDefaults setObject:server.absoluteString forKey:NXServerURLKey];[NSUserDefaults.standardUserDefaults setObject:server.absoluteString forKey:@"x-nekama.core-url"];[self load];
+   [NSUserDefaults.standardUserDefaults setInteger:([info[@"platform"] isEqual:@"cloudflare-workers"]&&![info[@"vpn_egress_configured"] boolValue])?2:4 forKey:@"x-nekama.setup-guide.step"];
    if([info[@"platform"] isEqual:@"cloudflare-workers"]&&![info[@"vpn_egress_configured"] boolValue])[self message:@"サーバーを連携しました。自動投稿を使う前にCloudflare側のVPN中継URL・認証Secretを設定してください。" title:@"VPN中継が未設定です"];
   });
  }] resume];
