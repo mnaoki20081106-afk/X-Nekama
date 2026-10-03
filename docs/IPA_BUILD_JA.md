@@ -16,7 +16,7 @@
 
 サービスアカウントを使わない一時ビルドでは、**Actions → iOS IPA Build → Run workflow** の `source_ipa_url` に短命なHTTPSダウンロードURLを指定できます。URLはログへ明示的に出力しません。永続的な認証トークンやパスワードをこの入力へ入れないでください。
 
-どちらの元IPA経路も無い場合、Workflow自体は失敗させません。Theosビルドと各テスト、`X-Nekama-tweak` artifactまでは実行し、完成IPA工程のみスキップしてSummaryに理由を表示します。
+Drive認証・一時URLが無い場合は、同じリポジトリのmainで成功した、期限内の `X-Nekama-IPA` artifactを再ビルド元にします。既存IPAの `XNekama.dylib` を置き換え、ロード命令を追加しないため、二重注入を避けられます。利用できるartifactも無い場合は、元IPAの設定が必要というエラーで停止します。tweakだけを検証する場合は `build_ipa` をオフにします。
 
 ## 検証
 
@@ -27,10 +27,14 @@ IPA注入ツール `pyzule-rw` はmacOS runnerのsystem Pythonへ直接インス
 ## 実行とダウンロード
 
 1. **Actions → iOS IPA Build → Run workflow** を開き、`main` を選びます。
-2. 完成IPAを作る場合は `build_ipa` をオンにします。Drive Secretが設定済みなら追加入力は不要です。未設定なら `source_ipa_url` を指定します。
+2. 完成IPAを作る場合は `build_ipa` をオンにします。Drive Secretが設定済みなら追加入力は不要です。未設定でも期限内の成功artifactがあれば追加入力は不要です。artifactも無い場合は `source_ipa_url` を指定します。
 3. 成功したRunの **Artifacts → X-Nekama-IPA** をダウンロードします。
 4. ZIP内の `X-Nekama-X12.29.ipa` と `.sha256` を確認し、IPAをSideStore等で署名・インストールします。
 
-元IPAや認証情報はActionsキャッシュへ保存しません。ForkからのPRにはSecretを渡さず、元IPAが無い場合はtweakとテストだけを検証します。
+元IPAや認証情報はActionsキャッシュへ保存しません。ForkからのPRにはSecretを渡しません。artifact経路でも、成功したmainの同じIPAワークフローの成果物のみを採用し、CRC・互換性・注入状態を検証します。
 
-完成IPA artifactは現在1日保持します。既存の `X-Nekama-tweak`（deb）も保存されます。IPAの公開Releaseへの自動公開は行いません。Actions上のビルド検証成功は、iPhone実機上の全機能動作まで保証するものではありません。
+完成IPA artifactは現在7日保持します。既存の `X-Nekama-tweak`（deb）も保存されます。IPAの公開Releaseへの自動公開は行いません。Actions上のビルド検証成功は、iPhone実機上の全機能動作まで保証するものではありません。
+
+## 起動・通信フックの回帰検証
+
+macOS上のObjective-Cランタイムテストで、NSObject以外のルートクラスを含む走査、親子クラスを両方フックした場合のsuper呼び出し、継承メソッドのフック、通信のnil完了ハンドラと応答の転送を確認します。これらはiPhoneでの起動確認とは別の検証です。起動直後に終了する場合は、端末の解析データにあるTwitterの `.ips` を使って実機側の原因を特定します。
