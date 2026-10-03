@@ -6,13 +6,14 @@
 #import <dlfcn.h>
 #import <ifaddrs.h>
 #import <net/if.h>
+#import "SessionHook.h"
 
 extern "C" int NXNativeGrokStart(const void *, const void *, const void *, void (*)(const void *, const void *, const void *));
 extern "C" char *NXNativeGrokSnapshot(const void *, const void *);
 
 static NSString * const NXStateKey = @"x-nekama.autopilot.v1";
 static const void *NXObservedTaskKey = &NXObservedTaskKey;
-static NSMutableDictionary *NXFactoryIMPs;
+static NSMutableSet *NXHookedSessionClasses;
 
 static BOOL NXRelevantTask(NSURLSessionTask *task) {
     NSURL *url=task.originalRequest.URL;
@@ -155,36 +156,17 @@ static void NXObserve(NSURLSessionTask *task, NSData *data, NSError *error) {
 }
 @end
 
-static IMP NXFactoryIMP(id self, SEL selector) {
-    @synchronized(NXFactoryIMPs) {
-        for (Class c = object_getClass(self); c; c = class_getSuperclass(c)) {
-            NSValue *v = NXFactoryIMPs[[NSString stringWithFormat:@"%@/%@", NSStringFromClass(c), NSStringFromSelector(selector)]];
-            if (v) return (IMP)v.pointerValue;
-        }
-    }
-    return NULL;
-}
-static NSURLSessionDataTask *NXDataTask(id self, SEL cmd, NSURLRequest *request, void (^completion)(NSData *, NSURLResponse *, NSError *)) {
-    IMP original = NXFactoryIMP(self, cmd);
-    __block __weak NSURLSessionDataTask *weakTask;
-    NSURLSessionDataTask *task = ((NSURLSessionDataTask *(*)(id,SEL,id,id))original)(self,cmd,request, ^(NSData *data, NSURLResponse *response, NSError *error) {
-        NXObserve(weakTask, data, error);
-        if (completion) completion(data, response, error);
-    });
-    NXVPNGuardTask(task);
-    weakTask = task;
-    return task;
-}
 static void NXHookSession(NSURLSession *session) {
-    Class c = object_getClass(session); SEL selector = @selector(dataTaskWithRequest:completionHandler:);
-    NSString *key = [NSString stringWithFormat:@"%@/%@", NSStringFromClass(c), NSStringFromSelector(selector)];
-    @synchronized(NXFactoryIMPs) {
-        if (NXFactoryIMPs[key]) return;
-        Method method = class_getInstanceMethod(c, selector);
-        IMP original = method_getImplementation(method);
-        if (!original || original == (IMP)NXDataTask) return;
-        NXFactoryIMPs[key] = [NSValue valueWithPointer:(const void *)original];
-        if (!class_addMethod(c, selector, (IMP)NXDataTask, method_getTypeEncoding(method))) method_setImplementation(method, (IMP)NXDataTask);
+    Class cls = object_getClass(session);
+    if (!cls) return;
+    NSString *key = NSStringFromClass(cls);
+    @synchronized(NXHookedSessionClasses) {
+        if ([NXHookedSessionClasses containsObject:key]) return;
+        if (NXHookDataTaskFactory(cls, ^(id task, NSData *data, NSError *error) {
+            NXObserve(task, data, error);
+        }, ^(id task) {
+            NXVPNGuardTask(task);
+        })) [NXHookedSessionClasses addObject:key];
     }
 }
 static IMP NXOriginalSessionFactory;
@@ -533,7 +515,7 @@ void NXAutopilotOpen(UIViewController *presenter) { [[NXAutopilot shared] open:p
 void NXAutopilotPauseForServer(void) { [[NXAutopilot shared] background]; [[NXAutopilot shared] pause:@"サーバーの予約管理へ切り替えました。端末の自動投稿は停止中です。"]; }
 void NXAutopilotInstall(void) {
     NXVPNInstall();
-    NXFactoryIMPs=[NSMutableDictionary dictionary];
+    NXHookedSessionClasses=[NSMutableSet set];
     Method factory=class_getClassMethod(NSURLSession.class,@selector(sessionWithConfiguration:delegate:delegateQueue:));
     NXOriginalSessionFactory=method_setImplementation(factory,(IMP)NXSessionFactory);
     NXHookSession(NSURLSession.sharedSession);

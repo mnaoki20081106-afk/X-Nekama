@@ -6,6 +6,7 @@
 #import <ifaddrs.h>
 #import <net/if.h>
 #include <mutex>
+#import "RuntimeSafety.h"
 
 static std::mutex NXVPNMutex;
 static NXVPNPolicy NXVPNState;
@@ -77,7 +78,7 @@ void NXVPNGuardTask(NSURLSessionTask *task) {
     // The concrete implementation may override NSURLSessionTask.resume.
     @synchronized(NXVPNHooked) {
         for (Class cls=object_getClass(task); cls; cls=class_getSuperclass(cls)) {
-            if (![cls isSubclassOfClass:NSURLSessionTask.class]) break;
+            if (!NXClassInheritsFrom(cls, NSURLSessionTask.class)) break;
             NSString *key=NSStringFromClass(cls); if ([NXVPNHooked containsObject:key]) continue;
             unsigned int count=0; Method *methods=class_copyMethodList(cls,&count);
             for (unsigned int i=0;i<count;i++) if (method_getName(methods[i])==@selector(resume)) {

@@ -180,6 +180,11 @@ jobs:
           clang++ -std=c++11 -fobjc-arc -fblocks -framework Foundation ios-tweak/tests/RuntimeSafetyTests.mm -o /tmp/runtime-safety-tests
           /tmp/runtime-safety-tests
 
+      - name: Test session superclass hooks and delegate delivery
+        run: |
+          clang++ -std=c++11 -fobjc-arc -fblocks -framework Foundation ios-tweak/tests/SessionHookTests.mm -o /tmp/session-hook-tests
+          /tmp/session-hook-tests
+
       - name: Test IPA download and verification helpers
         run: python3 -m unittest discover -s ios-tweak/tests -p 'test_*.py'
 
