@@ -27,7 +27,7 @@ permissions:
 env:
   # One-run bootstrap only. This signed URL is removed immediately after the
   # complete IPA path is proven in Actions.
-  BOOTSTRAP_SOURCE_IPA_URL: "https://sdmntprjapaneast.oaiusercontent.com/files/00000000-6f74-8209-ad16-7b95b2652e16/raw?se=2026-10-03T12%3A56%3A52Z&sp=r&sv=2026-02-06&sr=b&scid=6b227123-576f-50f5-9c59-8b5b498e2f94&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-10-03T02%3A22%3A33Z&ske=2026-10-04T02%3A22%3A33Z&sks=b&skv=2026-02-06&sig=tV2MZg76%2BYdRdEL5ErytchW8RLezaiwsCRZF37jhREE%3D"
+  BOOTSTRAP_SOURCE_IPA_URL: "https://sdmntprjapaneast.oaiusercontent.com/files/00000000-56b0-8209-9a41-5f635fc874df/raw?se=2026-10-03T13%3A02%3A13Z&sp=r&sv=2026-02-06&sr=b&scid=2c63a8b8-cbfe-5f09-92d6-abcd6432db31&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-10-03T02%3A46%3A49Z&ske=2026-10-04T02%3A46%3A49Z&sks=b&skv=2026-02-06&sig=NlhlqXshco32IFHu/Y2z9v7KUqXjzHnD5qAYw3UZxTw%3D"
 
 jobs:
   build:
@@ -147,7 +147,14 @@ jobs:
 
       - name: Install IPA packaging dependency
         if: steps.ipa.outputs.enabled == 'true'
-        run: python3 -m pip install 'https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip'
+        run: |
+          set -euo pipefail
+          PYZULE_VENV="$RUNNER_TEMP/pyzule-venv"
+          python3 -m venv "$PYZULE_VENV"
+          "$PYZULE_VENV/bin/python" -m pip install --upgrade pip
+          "$PYZULE_VENV/bin/python" -m pip install 'https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip'
+          echo "$PYZULE_VENV/bin" >> "$GITHUB_PATH"
+          "$PYZULE_VENV/bin/cyan" --help >/dev/null
 
       - name: Download private source IPA from Google Drive
         if: steps.ipa.outputs.source == 'drive'
