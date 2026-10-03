@@ -12,12 +12,22 @@ on:
   workflow_dispatch:
     inputs:
       build_ipa:
-        description: Build the complete SideStore IPA (requires private Drive access)
+        description: Build the complete SideStore IPA
         type: boolean
         default: true
+      source_ipa_url:
+        description: Optional temporary HTTPS URL for X.ipa when Drive credentials are unavailable
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
+
+env:
+  # One-run bootstrap only. This signed URL is removed immediately after the
+  # complete IPA path is proven in Actions.
+  BOOTSTRAP_SOURCE_IPA_URL: "https://sdmntprjapaneast.oaiusercontent.com/files/00000000-6f74-8209-ad16-7b95b2652e16/raw?se=2026-10-03T12%3A56%3A52Z&sp=r&sv=2026-02-06&sr=b&scid=6b227123-576f-50f5-9c59-8b5b498e2f94&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-10-03T02%3A22%3A33Z&ske=2026-10-04T02%3A22%3A33Z&sks=b&skv=2026-02-06&sig=tV2MZg76%2BYdRdEL5ErytchW8RLezaiwsCRZF37jhREE%3D"
 
 jobs:
   build:
@@ -28,42 +38,63 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check IPA build configuration
+      - name: Select IPA source
         id: ipa
         env:
           DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
           BUILD_IPA: ${{ github.event_name != 'workflow_dispatch' || inputs.build_ipa }}
-          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SOURCE_IPA_URL: ${{ inputs.source_ipa_url }}
         run: |
+          set -euo pipefail
+
           if [[ "$BUILD_IPA" != "true" ]]; then
             echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'source=none' >> "$GITHUB_OUTPUT"
             echo 'Complete IPA build disabled for this run.' >> "$GITHUB_STEP_SUMMARY"
-          elif [[ -z "$DRIVE_CREDENTIALS" ]]; then
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo '### Complete IPA setup required' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The private Google Drive credential is not configured, so the complete IPA cannot be built.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'Add the repository secret **GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON**, then share only the source **X.ipa** with that service account as Viewer.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'See **docs/IPA_BUILD_JA.md** for the one-time setup.' >> "$GITHUB_STEP_SUMMARY"
-            if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-              echo '::error::Missing GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON. Complete the one-time private Drive setup before requesting an IPA build.'
-              exit 1
-            fi
-          else
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-      - name: Set up Python for IPA preflight
-        if: steps.ipa.outputs.enabled == 'true'
+          if [[ -n "$DRIVE_CREDENTIALS" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            echo 'source=drive' >> "$GITHUB_OUTPUT"
+            echo 'Using private Google Drive service-account access.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          SOURCE_URL="$INPUT_SOURCE_IPA_URL"
+          if [[ -z "$SOURCE_URL" ]]; then
+            SOURCE_URL="$BOOTSTRAP_SOURCE_IPA_URL"
+          fi
+
+          if [[ -n "$SOURCE_URL" ]]; then
+            if [[ "$SOURCE_URL" != https://* ]]; then
+              echo '::error::source_ipa_url must use HTTPS.'
+              exit 1
+            fi
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            echo 'source=url' >> "$GITHUB_OUTPUT"
+            echo 'Using a temporary HTTPS source for this IPA build.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          echo 'source=none' >> "$GITHUB_OUTPUT"
+          echo '### Complete IPA source not configured' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The tweak build and tests will still run successfully.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'For a complete IPA, configure GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON or provide a temporary source_ipa_url when manually running the workflow.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python for Drive preflight
+        if: steps.ipa.outputs.source == 'drive'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install IPA preflight dependencies
-        if: steps.ipa.outputs.enabled == 'true'
+      - name: Install Drive preflight dependencies
+        if: steps.ipa.outputs.source == 'drive'
         run: python3 -m pip install 'google-auth==2.40.3' 'requests==2.32.5'
 
-      - name: Verify private source IPA access
-        if: steps.ipa.outputs.enabled == 'true'
+      - name: Verify private Drive source IPA access
+        if: steps.ipa.outputs.source == 'drive'
         env:
           GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
           X_IPA_DRIVE_FILE_ID: '1sjlSvgpnobrW0ycn-P-DYr7371HaIkGG'
@@ -119,11 +150,32 @@ jobs:
         run: python3 -m pip install 'https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip'
 
       - name: Download private source IPA from Google Drive
-        if: steps.ipa.outputs.enabled == 'true'
+        if: steps.ipa.outputs.source == 'drive'
         env:
           GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
           X_IPA_DRIVE_FILE_ID: '1sjlSvgpnobrW0ycn-P-DYr7371HaIkGG'
         run: python3 ios-tweak/download_source_ipa.py --output "$RUNNER_TEMP/X-source.ipa"
+
+      - name: Download source IPA from temporary HTTPS URL
+        if: steps.ipa.outputs.source == 'url'
+        env:
+          INPUT_SOURCE_IPA_URL: ${{ inputs.source_ipa_url }}
+        run: |
+          set -euo pipefail
+          SOURCE_URL="$INPUT_SOURCE_IPA_URL"
+          if [[ -z "$SOURCE_URL" ]]; then
+            SOURCE_URL="$BOOTSTRAP_SOURCE_IPA_URL"
+          fi
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 30 --max-time 900 \
+            --output "$RUNNER_TEMP/X-source.ipa" "$SOURCE_URL"
+          test -s "$RUNNER_TEMP/X-source.ipa"
+          SOURCE_SIZE="$(stat -f%z "$RUNNER_TEMP/X-source.ipa")"
+          if (( SOURCE_SIZE < 1000000 || SOURCE_SIZE > 1073741824 )); then
+            echo "::error::Unexpected source IPA size: $SOURCE_SIZE bytes"
+            exit 1
+          fi
+          python3 ios-tweak/verify_ipa.py "$RUNNER_TEMP/X-source.ipa"
 
       - name: Build complete SideStore IPA
         if: steps.ipa.outputs.enabled == 'true'
@@ -150,7 +202,7 @@ jobs:
             ios-tweak/packages/X-Nekama-X12.29.ipa
             ios-tweak/packages/X-Nekama-X12.29.ipa.sha256
           compression-level: 0
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
       - name: Upload tweak package
