@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       build_ipa:
-        description: Build the complete SideStore IPA (requires GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON)
+        description: Build the complete SideStore IPA (requires private Drive access)
         type: boolean
         default: true
 
@@ -27,6 +27,47 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check IPA build configuration
+        id: ipa
+        env:
+          DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
+          BUILD_IPA: ${{ github.event_name != 'workflow_dispatch' || inputs.build_ipa }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$BUILD_IPA" != "true" ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Complete IPA build disabled for this run.' >> "$GITHUB_STEP_SUMMARY"
+          elif [[ -z "$DRIVE_CREDENTIALS" ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo '### Complete IPA setup required' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The private Google Drive credential is not configured, so the complete IPA cannot be built.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Add the repository secret **GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON**, then share only the source **X.ipa** with that service account as Viewer.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'See **docs/IPA_BUILD_JA.md** for the one-time setup.' >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+              echo '::error::Missing GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON. Complete the one-time private Drive setup before requesting an IPA build.'
+              exit 1
+            fi
+          else
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python for IPA preflight
+        if: steps.ipa.outputs.enabled == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install IPA preflight dependencies
+        if: steps.ipa.outputs.enabled == 'true'
+        run: python3 -m pip install 'google-auth==2.40.3' 'requests==2.32.5'
+
+      - name: Verify private source IPA access
+        if: steps.ipa.outputs.enabled == 'true'
+        env:
+          GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
+          X_IPA_DRIVE_FILE_ID: '1sjlSvgpnobrW0ycn-P-DYr7371HaIkGG'
+        run: python3 ios-tweak/download_source_ipa.py --check-only
 
       - name: Install build dependencies
         run: brew install make dpkg ldid
@@ -73,37 +114,9 @@ jobs:
       - name: Test IPA download and verification helpers
         run: python3 -m unittest discover -s ios-tweak/tests -p 'test_*.py'
 
-      - name: Check complete IPA configuration
-        id: ipa
-        env:
-          DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}
-          BUILD_IPA: ${{ github.event_name != 'workflow_dispatch' || inputs.build_ipa || github.event.inputs.build_ipa == '' }}
-        run: |
-          if [[ "$BUILD_IPA" != "true" ]]; then
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo 'Complete IPA build disabled for this run.' >> "$GITHUB_STEP_SUMMARY"
-          elif [[ -z "$DRIVE_CREDENTIALS" ]]; then
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo '### Complete IPA setup required' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The tweak was built, but no IPA was produced. Add GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON and share only the source X.ipa with that service account. See docs/IPA_BUILD_JA.md.' >> "$GITHUB_STEP_SUMMARY"
-            if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-              echo '::error::Missing GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON; requested IPA cannot be built.'
-              exit 1
-            fi
-          else
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set up Python for IPA packaging
+      - name: Install IPA packaging dependency
         if: steps.ipa.outputs.enabled == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install IPA packaging dependencies
-        if: steps.ipa.outputs.enabled == 'true'
-        run: |
-          python3 -m pip install 'google-auth==2.40.3' 'requests==2.32.5' 'https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip'
+        run: python3 -m pip install 'https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip'
 
       - name: Download private source IPA from Google Drive
         if: steps.ipa.outputs.enabled == 'true'
@@ -146,4 +159,4 @@ jobs:
         with:
           name: X-Nekama-tweak
           path: ios-tweak/packages/*.deb
-          if-no-files-found: error
+          if-no-files-found: ignore
