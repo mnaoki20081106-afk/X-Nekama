@@ -32,7 +32,20 @@ case "$MODE" in
     fi
 
     if [[ "$MODE" == "--sidestore" ]]; then
-      cyan -i "$IPA" -o "$OUT" -n "X-Nekama" -u -w -e -f "$DYLIB"
+      if python3 - "$IPA" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    sys.exit(0 if 'Payload/Twitter.app/Frameworks/XNekama.dylib' in archive.namelist() else 1)
+PY
+      then
+        REPACKED="$(mktemp -d)/X-replaced.ipa"
+        python3 ./replace_injected_tweak.py "$IPA" "$DYLIB" "$REPACKED"
+        cyan -i "$REPACKED" -o "$OUT" -n "X-Nekama" -u -w -e
+        rm -f "$REPACKED"
+        rmdir "$(dirname "$REPACKED")"
+      else
+        cyan -i "$IPA" -o "$OUT" -n "X-Nekama" -u -w -e -f "$DYLIB"
+      fi
     else
       cyan -i "$IPA" -o "$OUT" -u -w -f "$DYLIB"
     fi

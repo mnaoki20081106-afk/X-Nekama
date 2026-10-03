@@ -7,12 +7,12 @@
 #import "VPNGate.h"
 #import "ServerManager.h"
 #include <string.h>
+#include <atomic>
+#import "RuntimeSafety.h"
 
 static const void *kNXButtonKey = &kNXButtonKey;
 static const void *kNXHelperKey = &kNXHelperKey;
-static NSMutableDictionary<NSString *, NSValue *> *NXOriginalViewDidAppear;
 static NSMutableSet<NSString *> *NXHookedClasses;
-static NSMutableDictionary<NSString *, NSValue *> *NXOriginalGrokAttachmentDidAdd;
 static NSMutableSet<NSString *> *NXHookedGrokAttachmentClasses;
 static NSString *NXLastGrokAttachmentEvent;
 static NSString * const NXGrokAttachmentNotification =
@@ -28,7 +28,7 @@ static BOOL NXAnyClassExists(NSArray<NSString *> *names) {
 }
 
 static BOOL NXLooksLikeComposerClass(Class cls) {
-    if (!cls || ![cls isSubclassOfClass:UIViewController.class]) return NO;
+    if (!cls || !NXClassInheritsFrom(cls, UIViewController.class)) return NO;
     NSString *name = NSStringFromClass(cls);
     if ([name containsString:@"ComposerThreadViewController"] ||
         [name containsString:@"TweetCompose"] ||
@@ -106,12 +106,11 @@ static BOOL NXTriggerControlAction(UIViewController *composer, NSString *token) 
 }
 
 static NSArray<NSString *> *NXClassesImplementingSelector(SEL selector) {
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) return @[];
-    Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
-    count = objc_getClassList(classes, count);
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    if (!classes) return @[];
     NSMutableArray<NSString *> *matches = [NSMutableArray array];
-    for (int i = 0; i < count; i++) {
+    for (unsigned int i = 0; i < count; i++) {
         Class cls = classes[i];
         if (class_getInstanceMethod(cls, selector)) {
             NSString *name = NSStringFromClass(cls);
@@ -123,20 +122,6 @@ static NSArray<NSString *> *NXClassesImplementingSelector(SEL selector) {
     }
     free(classes);
     return matches;
-}
-
-static IMP NXStoredIMPForObject(
-    id object,
-    NSDictionary<NSString *, NSValue *> *implementations
-) {
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
-        NSValue *value = implementations[NSStringFromClass(cls)];
-        if (!value) continue;
-        IMP implementation = NULL;
-        [value getValue:&implementation size:sizeof(implementation)];
-        if (implementation) return implementation;
-    }
-    return NULL;
 }
 
 static Method NXOwnInstanceMethod(Class cls, SEL selector) {
@@ -252,7 +237,7 @@ static void NXOpenGrokWithPrompt(NSString *prompt) {
     SEL accountSelector = NSSelectorFromString(@"account");
     Method initMethod = class_getInstanceMethod(cls,initSelector);
     Method accountMethod = class_getInstanceMethod(self.composer.class,accountSelector);
-    if (!cls || ![cls isSubclassOfClass:UIViewController.class] || !initMethod || !accountMethod ||
+    if (!cls || !NXClassInheritsFrom(cls, UIViewController.class) || !initMethod || !accountMethod ||
         strcmp(method_getTypeEncoding(initMethod),"@24@0:8@16") != 0 ||
         strcmp(method_getTypeEncoding(accountMethod),"@16@0:8") != 0) {
         [self notificationSettingsUnavailable]; return;
@@ -463,18 +448,11 @@ static void NXAttachButton(UIViewController *controller) {
 
 static void NXGrokAttachmentDidAdd(
     id self,
-    SEL _cmd,
-    id manager,
+    __unused SEL _cmd,
+    __unused id manager,
     id asset,
     id promptObject
 ) {
-    IMP original = NXStoredIMPForObject(self, NXOriginalGrokAttachmentDidAdd);
-    if (original && original != (IMP)NXGrokAttachmentDidAdd) {
-        ((void (*)(id, SEL, id, id, id))original)(
-            self, _cmd, manager, asset, promptObject
-        );
-    }
-
     NSString *prompt =
         [promptObject isKindOfClass:NSString.class] ? (NSString *)promptObject : nil;
     NSString *event = [NSString stringWithFormat:
@@ -514,44 +492,15 @@ static void NXHookGrokAttachmentObserverClass(Class cls) {
     @synchronized (NXHookedGrokAttachmentClasses) {
         if ([NXHookedGrokAttachmentClasses containsObject:name]) return;
 
-        IMP current = method_getImplementation(method);
-        if (current == (IMP)NXGrokAttachmentDidAdd) {
-            [NXHookedGrokAttachmentClasses addObject:name];
-            return;
-        }
-
-        IMP previous = method_setImplementation(
-            method,
-            (IMP)NXGrokAttachmentDidAdd
-        );
-        NXOriginalGrokAttachmentDidAdd[name] =
-            [NSValue value:&previous withObjCType:@encode(IMP)];
+        IMP original = method_getImplementation(method);
+        IMP replacement = imp_implementationWithBlock(^(id object, id manager, id asset, id prompt) {
+            ((void (*)(id, SEL, id, id, id))original)(object, selector, manager, asset, prompt);
+            NXGrokAttachmentDidAdd(object, selector, manager, asset, prompt);
+        });
+        method_setImplementation(method, replacement);
         [NXHookedGrokAttachmentClasses addObject:name];
 
         NSLog(@"[X-Nekama] observing Grok attachment callback on %@", name);
-    }
-}
-
-static IMP NXOriginalIMPForObject(id object) {
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
-        NSValue *value = NXOriginalViewDidAppear[NSStringFromClass(cls)];
-        if (value) {
-            IMP original = NULL;
-            [value getValue:&original size:sizeof(original)];
-            return original;
-        }
-    }
-    return NULL;
-}
-
-static void NXComposerViewDidAppear(id self, SEL _cmd, BOOL animated) {
-    IMP original = NXOriginalIMPForObject(self);
-    if (original && original != (IMP)NXComposerViewDidAppear) {
-        ((void (*)(id, SEL, BOOL))original)(self, _cmd, animated);
-    }
-    if ([self isKindOfClass:UIViewController.class]) {
-        NXAutopilotSetComposer((UIViewController *)self);
-        NXAttachButton((UIViewController *)self);
     }
 }
 
@@ -560,37 +509,32 @@ static void NXHookComposerClass(Class cls) {
     NSString *name = NSStringFromClass(cls);
     @synchronized (NXHookedClasses) {
         if ([NXHookedClasses containsObject:name]) return;
-        SEL selector = @selector(viewDidAppear:);
-        Method method = class_getInstanceMethod(cls, selector);
-        if (!method) return;
-        IMP original = method_getImplementation(method);
-        if (original == (IMP)NXComposerViewDidAppear) {
-            [NXHookedClasses addObject:name];
-            return;
-        }
-        const char *types = method_getTypeEncoding(method);
-        if (class_addMethod(cls, selector, (IMP)NXComposerViewDidAppear, types)) {
-            NXOriginalViewDidAppear[name] = [NSValue value:&original withObjCType:@encode(IMP)];
-        } else {
-            IMP previous = method_setImplementation(method, (IMP)NXComposerViewDidAppear);
-            NXOriginalViewDidAppear[name] = [NSValue value:&previous withObjCType:@encode(IMP)];
-        }
+        if (!NXHookVoidBoolMethod(cls, @selector(viewDidAppear:), ^(id object, __unused BOOL animated) {
+            UIViewController *controller = (UIViewController *)object;
+            NXAutopilotSetComposer(controller);
+            NXAttachButton(controller);
+        })) return;
         [NXHookedClasses addObject:name];
         NSLog(@"[X-Nekama] hooked composer class %@", name);
     }
 }
 
+static std::atomic<bool> NXHookScanPending(false);
 static void NXInstallHooks(void) {
+    // dyld calls back once for every existing image during registration. Coalesce
+    // that launch burst into one scan, outside the loader callback/lock.
+    if (NXHookScanPending.exchange(true)) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        int count = objc_getClassList(NULL, 0);
-        if (count <= 0) return;
-        Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
-        count = objc_getClassList(classes, count);
-        for (int i = 0; i < count; i++) {
-            NXHookComposerClass(classes[i]);
-            NXHookGrokAttachmentObserverClass(classes[i]);
+        unsigned int count = 0;
+        Class *classes = objc_copyClassList(&count);
+        if (classes) {
+            for (unsigned int i = 0; i < count; i++) {
+                NXHookComposerClass(classes[i]);
+                NXHookGrokAttachmentObserverClass(classes[i]);
+            }
+            free(classes);
         }
-        free(classes);
+        NXHookScanPending.store(false);
     });
 }
 
@@ -601,9 +545,7 @@ static void NXImageLoaded(__unused const struct mach_header *header, __unused in
 __attribute__((constructor)) static void NXBootstrap(void) {
     @autoreleasepool {
         NXAutopilotInstall();
-        NXOriginalViewDidAppear = [NSMutableDictionary dictionary];
         NXHookedClasses = [NSMutableSet set];
-        NXOriginalGrokAttachmentDidAdd = [NSMutableDictionary dictionary];
         NXHookedGrokAttachmentClasses = [NSMutableSet set];
         _dyld_register_func_for_add_image(NXImageLoaded);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),

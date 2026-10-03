@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -69,11 +70,51 @@ jobs:
             exit 0
           fi
 
-          echo 'enabled=false' >> "$GITHUB_OUTPUT"
-          echo 'source=none' >> "$GITHUB_OUTPUT"
-          echo '### Complete IPA source not configured' >> "$GITHUB_STEP_SUMMARY"
-          echo 'The tweak build and tests will still run successfully.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'For a complete IPA, configure GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON or provide a temporary source_ipa_url when manually running the workflow.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          echo 'source=artifact' >> "$GITHUB_OUTPUT"
+          echo 'Reusing the latest successful main-branch IPA artifact as a private rebuild source.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download previous successful IPA artifact
+        if: steps.ipa.outputs.source == 'artifact'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              ...context.repo, name: 'X-Nekama-IPA', per_page: 100
+            });
+            let selected;
+            for (const artifact of artifacts) {
+              if (artifact.expired || artifact.workflow_run?.head_branch !== 'main') continue;
+              const {data: run} = await github.rest.actions.getWorkflowRun({
+                ...context.repo, run_id: artifact.workflow_run.id
+              });
+              if (run.conclusion === 'success' && run.path === '.github/workflows/ios-tweak.yml') {
+                selected = artifact; break;
+              }
+            }
+            if (!selected) throw new Error('No unexpired successful IPA artifact. Configure Drive credentials or provide source_ipa_url.');
+            const {data} = await github.rest.actions.downloadArtifact({
+              ...context.repo, artifact_id: selected.id, archive_format: 'zip'
+            });
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/previous-ipa.zip`, Buffer.from(data));
+            core.summary.addRaw(`Rebuild source: successful run ${selected.workflow_run.id}`).write();
+
+      - name: Validate previous IPA rebuild source
+        if: steps.ipa.outputs.source == 'artifact'
+        run: |
+          python3 - <<'PY'
+          import os, shutil, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          with zipfile.ZipFile(root / 'previous-ipa.zip') as archive:
+              files = [n for n in archive.namelist() if n.endswith('.ipa')]
+              if len(files) != 1:
+                  raise ValueError('Expected exactly one IPA in prior artifact')
+              with archive.open(files[0]) as src, open(root / 'X-source.ipa', 'wb') as dst:
+                  shutil.copyfileobj(src, dst)
+          PY
+          python3 ios-tweak/verify_built_ipa.py "$RUNNER_TEMP/X-source.ipa"
 
       - name: Set up Python for Drive preflight
         if: steps.ipa.outputs.source == 'drive'
@@ -133,6 +174,11 @@ jobs:
         run: |
           c++ -std=c++11 ios-tweak/tests/VPNPolicyTests.cpp -o /tmp/vpn-policy-tests
           /tmp/vpn-policy-tests
+
+      - name: Test runtime class scanning and superclass hooks
+        run: |
+          clang++ -std=c++11 -fobjc-arc -fblocks -framework Foundation ios-tweak/tests/RuntimeSafetyTests.mm -o /tmp/runtime-safety-tests
+          /tmp/runtime-safety-tests
 
       - name: Test IPA download and verification helpers
         run: python3 -m unittest discover -s ios-tweak/tests -p 'test_*.py'
@@ -198,7 +244,7 @@ jobs:
             ios-tweak/packages/X-Nekama-X12.29.ipa
             ios-tweak/packages/X-Nekama-X12.29.ipa.sha256
           compression-level: 0
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
       - name: Upload tweak package

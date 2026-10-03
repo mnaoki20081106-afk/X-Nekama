@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from download_source_ipa import download
 from verify_built_ipa import verify_injection
+from replace_injected_tweak import replace
 
 
 def archive_bytes():
@@ -97,6 +98,22 @@ class IPABuildTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         verify_injection(ipa)
+
+    def test_rebuild_replaces_only_the_tweak_and_preserves_load_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, target, dylib = root / 'source.ipa', root / 'target.ipa', root / 'new.dylib'
+            binary = executable(['@rpath/XNekama.dylib'])
+            dylib.write_bytes(executable(['/usr/lib/libobjc.A.dylib']))
+            with zipfile.ZipFile(source, 'w') as archive:
+                archive.writestr('Payload/Twitter.app/Twitter', binary)
+                archive.writestr('Payload/Twitter.app/Frameworks/XNekama.dylib', executable([]))
+                archive.writestr('Payload/Twitter.app/Info.plist', b'unchanged metadata')
+            replace(source, dylib, target)
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(archive.read('Payload/Twitter.app/Twitter'), binary)
+                self.assertEqual(archive.read('Payload/Twitter.app/Frameworks/XNekama.dylib'), dylib.read_bytes())
+                self.assertEqual(archive.read('Payload/Twitter.app/Info.plist'), b'unchanged metadata')
 
 
 if __name__ == '__main__':
