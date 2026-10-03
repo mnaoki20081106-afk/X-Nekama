@@ -43,7 +43,7 @@ def probe(session, file_id):
         },
         timeout=60,
     )
-    if response.status_code in (401, 403, 404):
+    if getattr(response, 'status_code', None) in (401, 403, 404):
         raise PermissionError('source_not_accessible')
     response.raise_for_status()
     metadata = response.json()
@@ -70,7 +70,7 @@ def download(session, file_id, output):
             stream=True,
             timeout=120,
         ) as data:
-            if data.status_code in (401, 403, 404):
+            if getattr(data, 'status_code', None) in (401, 403, 404):
                 raise PermissionError('source_not_accessible')
             data.raise_for_status()
             with partial.open('wb') as target:
