@@ -1,6 +1,7 @@
 // XActions' maintained HTTP client is vendored under Apache-2.0; see vendor/xactions/LICENSE.
 import {TwitterHttpClient} from './vendor/xactions/src/scrapers/twitter/http/client.js';
 import {TwitterAuth} from './vendor/xactions/src/scrapers/twitter/http/auth.js';
+import {USER_AGENTS} from './vendor/xactions/src/scrapers/twitter/http/endpoints.js';
 import {scrapeProfile} from './vendor/xactions/src/scrapers/twitter/http/profile.js';
 import {scrapeTweets} from './vendor/xactions/src/scrapers/twitter/http/tweets.js';
 import {postTweet} from './vendor/xactions/src/scrapers/twitter/http/actions.js';
@@ -9,9 +10,12 @@ import {readFile} from 'node:fs/promises';
 import {serverVPN} from './vpn.mjs';
 
 function stageError(error,stage){if(error&&typeof error==='object'){if(!error.deliveryStage)error.deliveryStage=stage;return error}const wrapped=new Error(String(error));wrapped.deliveryStage=stage;return wrapped}
-function authFor(transport={}){return new TwitterAuth({fetch:transport.fetch||serverVPN.fetch})}
+// Use one supported Web client identity for authentication and subsequent calls.
+// Keep it deterministic across client instances and server restarts of this version.
+const userAgent=USER_AGENTS[0];
+function authFor(transport={}){return new TwitterAuth({fetch:transport.fetch||serverVPN.fetch,userAgent})}
 function clientFor(cookies,transport={}){
- const options={cookies,rateLimitStrategy:'error',fetch:serverVPN.fetch,maxRetries:0};
+ const options={cookies,rateLimitStrategy:'error',fetch:serverVPN.fetch,maxRetries:0,userAgent};
  if(transport.fetch)options.fetch=transport.fetch;
  if(transport.proxy)options.proxy=transport.proxy;
  return new TwitterHttpClient(options);
@@ -28,8 +32,11 @@ export async function ensureBio(cookies,username,bio,transport={}){
  if(bio.length>160)throw Error('Xプロフィールは160文字以内で入力してください');
  const client=clientFor(cookies,transport);
  const current=await scrapeProfile(client,username);
- if(current.bio!==bio){await client.rest('/1.1/account/update_profile.json',{body:{description:bio}})}
- const updated=await scrapeProfile(client,username);
+ let updated=current;
+ if(current.bio!==bio){
+  await client.rest('/1.1/account/update_profile.json',{body:{description:bio}});
+  updated=await scrapeProfile(client,username);
+ }
  if(!/AI/i.test(updated.bio||'')||!/(架空|バーチャル)/.test(updated.bio||''))throw Error('XプロフィールへのAI表記を確認できませんでした');
  return updated;
 }

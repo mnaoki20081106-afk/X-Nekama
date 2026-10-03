@@ -397,7 +397,9 @@ export class TwitterHttpClient {
     try {
       return await this._graphqlOnce(resolvedId, operationName, variables, features, isMutation);
     } catch (err) {
-      if (!this._autoRefreshQueryIds || !this._isStaleQueryIdFailure(err)) throw err;
+      // A write may have reached X even when its response is an error. Query-ID
+      // recovery is safe for reads, but must never silently replay a mutation.
+      if (isMutation || !this._autoRefreshQueryIds || !this._isStaleQueryIdFailure(err)) throw err;
       const freshId = await this._refreshedQueryId(operationName);
       if (!freshId || freshId === resolvedId) throw err;
       if (this._debug) {
