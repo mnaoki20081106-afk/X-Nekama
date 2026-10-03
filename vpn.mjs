@@ -3,7 +3,7 @@ import {TRACE_URL,parseExitTrace,validExitConfig,matchesExit} from './exit-polic
 
 // The process must share Gluetun's network namespace and firewall. A health
 // response by itself cannot make an independently networked process safe.
-export function createVPNGate({fetch:transport=globalThis.fetch,interfaces=networkInterfaces,configured=['gluetun','warp'].includes(process.env.X_VPN_MODE),mode=process.env.X_VPN_MODE||'gluetun',interfaceName=process.env.X_VPN_INTERFACE||'tun0',exitMode=process.env.X_EXIT_MODE||'warp',expectedIP=process.env.X_EXIT_IP||'',expectedCountry=process.env.X_EXIT_COUNTRY||'JP'}={}){
+export function createVPNGate({fetch:transport=globalThis.fetch,interfaces=networkInterfaces,configured=['gluetun','warp'].includes(process.env.X_VPN_MODE)||!!process.env.WARP_PROXY_URL,mode=process.env.X_VPN_MODE||(process.env.WARP_PROXY_URL?'warp':'gluetun'),interfaceName=process.env.X_VPN_INTERFACE||'tun0',exitMode=process.env.X_EXIT_MODE||'warp',expectedIP=process.env.X_EXIT_IP||'',expectedCountry=process.env.X_EXIT_COUNTRY||'JP'}={}){
  let state={required:true,connected:false,checked_at:null,message:'サーバーVPNが未設定です。予約投稿は待機します。'};
  async function check(){
   try{

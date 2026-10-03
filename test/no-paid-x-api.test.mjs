@@ -49,7 +49,7 @@ test('Cloudflare public runtime uses encrypted XActions sessions',async()=>{
 });
 
 test('Node runtime uses XActions session posting only',async()=>{
-  const source=await readFile('server.mjs','utf8');
+  const source=(await readFile('server.mjs','utf8'))+(await readFile('scheduler.mjs','utf8'));
   assert.match(source,/await x\.checkBio\(cookies,a\.username,xTransport\)/);
   assert.match(source,/await x\.publish\(cookies,d\.text,imagePath/);
   assert.match(source,/createVerifiedEgressFetch/);

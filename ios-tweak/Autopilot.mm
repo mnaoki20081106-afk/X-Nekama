@@ -1,5 +1,6 @@
 #import "Autopilot.h"
 #import "VPNGate.h"
+#import "ServerManager.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -527,6 +528,7 @@ void NXAutopilotSetComposer(UIViewController *composer) {
     if (!engine.submissionStarted) engine.composer=composer;
     engine.account=account;
 }
+NSDictionary *NXDeviceSource(void){NXAutopilot *e=[NXAutopilot shared];return @{@"username":NXString(e.state[@"username"]),@"reference":NXString(e.state[@"reference"]),@"reference_posts":e.state[@"reference_posts"] ?: @[]};}
 void NXAutopilotOpen(UIViewController *presenter) { [[NXAutopilot shared] open:presenter]; }
 void NXAutopilotPauseForServer(void) { [[NXAutopilot shared] background]; [[NXAutopilot shared] pause:@"サーバーの予約管理へ切り替えました。端末の自動投稿は停止中です。"]; }
 void NXAutopilotInstall(void) {
@@ -535,4 +537,5 @@ void NXAutopilotInstall(void) {
     Method factory=class_getClassMethod(NSURLSession.class,@selector(sessionWithConfiguration:delegate:delegateQueue:));
     NXOriginalSessionFactory=method_setImplementation(factory,(IMP)NXSessionFactory);
     NXHookSession(NSURLSession.sharedSession);
+    NXServerManagerInstall();
 }
