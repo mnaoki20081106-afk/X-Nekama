@@ -1,0 +1,10 @@
+{$RIRI_PUBLIC_HOST} {
+  encode zstd gzip
+  reverse_proxy bridge:8787
+  header {
+    -Server
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    Cache-Control no-store
+  }
+}
