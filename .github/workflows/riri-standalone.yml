@@ -1,0 +1,53 @@
+name: Riri standalone dylib
+on:
+  push:
+    branches: ['codex/riri-standalone-20261007']
+    paths: ['riri-tweak/**', '.github/workflows/riri-standalone.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install make ldid
+      - name: GNU Make
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+      - name: iOS SDK
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          git clone -n --depth=1 --filter=tree:0 https://github.com/theos/sdks/
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
+          git checkout
+          mv iPhoneOS16.5.sdk "$THEOS/sdks/"
+      - name: Build
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          cd riri-tweak
+          make clean
+          make FINALPACKAGE=1
+          mkdir -p ../dist
+          DYLIB=$(find .theos/obj -name RiriAutoReply.dylib -type f | head -n 1)
+          test -n "$DYLIB"
+          cp "$DYLIB" ../dist/RiriAutoReply.dylib
+          file ../dist/RiriAutoReply.dylib
+          otool -L ../dist/RiriAutoReply.dylib
+          lipo -verify_arch arm64 ../dist/RiriAutoReply.dylib
+          codesign --force --sign - ../dist/RiriAutoReply.dylib
+          codesign --verify ../dist/RiriAutoReply.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RiriAutoReply-dylib
+          path: dist/RiriAutoReply.dylib
+          if-no-files-found: error

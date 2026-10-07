@@ -1,0 +1,8 @@
+Package: local.riri.dmreceive
+Name: Riri DM Receive
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Forward DM receive events to a local bridge
+Maintainer: Local
+Author: Local
+Section: Tweaks
