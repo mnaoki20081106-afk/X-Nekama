@@ -80,7 +80,7 @@ export function createConversationMemory({maxMessages=DEFAULT_HISTORY_MESSAGES,m
   };
 }
 
-const defaultMemory=createConversationMemory();
+const defaultMemory=createConversationMemory({\n  maxMessages:process.env.XCHAT_HISTORY_MESSAGES,\n  maxThreads:process.env.XCHAT_MAX_THREADS\n});
 
 export function buildGeneratorPayload(message,{memory=defaultMemory}={}){
   const text=clip(message?.text??'',MAX_INBOUND_CHARS);
