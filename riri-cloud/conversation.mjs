@@ -37,7 +37,7 @@ export function groupReady(rows,nowMs=Date.now(),quietMs=60000,limit=4){
    // Don't reply yet if the other person is still typing a sequence of DMs.
    const last=group.at(-1);
    if(last.timestamp_ms>nowMs-quietMs)continue;
-   out.push(group.slice(-6));
+   out.push(group);
  }
  return out.sort((a,b)=>a.at(-1).timestamp_ms-b.at(-1).timestamp_ms).slice(0,limit);
 }
