@@ -53,8 +53,8 @@ export function modelOutput(value){
  if(reply.startsWith("```json"))reply=reply.replace(/^```json\s*/,"").replace(/\s*```$/,"");
  let memory=redactForMemory(v.memory_summary);
  // A generation can return a single JSON string. Plain reply fallback remains usable.
- if(reply.startsWith("{")&&reply.endsWith("}")){
-   try{const parsed=JSON.parse(reply);if(typeof parsed.reply==="string"){reply=parsed.reply.trim();memory=redactForMemory(parsed.memory_summary||memory);}}catch{}
+ if(reply.startsWith("{")){
+   try{const parsed=JSON.parse(reply);if(typeof parsed.reply!=="string")throw Error("missing_reply");reply=parsed.reply.trim();memory=redactForMemory(parsed.memory_summary||memory);}catch{throw Error("unparseable_model_json");}
  }
  if(!reply||reply.length>2000)throw Error("invalid_model_output");
  return {reply,memory_summary:memory};
