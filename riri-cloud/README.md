@@ -34,3 +34,15 @@ Initial estimated monthly compute allowance is **15 USD**, subject to the monthl
 - GitHub Actions workflow `Riri cloud and Modal checks` runs both automatically on this branch.
 
 These tests use fixture messages; they do not prove live DM delivery, model downloading, GPU memory sufficiency, or billing. The API should be verified against the specific X version and model environment before unattended operation.
+
+## Smartphone-only deployment via GitHub Actions
+
+After reviewing and merging this branch into the default branch, the two manual deployment workflows can be invoked from GitHub's **Actions** page on a smartphone. They do not require installing Docker, Python or Wrangler on a personal computer.
+
+- **Riri Modal manual deploy** expects the repository secrets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`; create the `riri-modal-auth` secret on Modal beforehand.
+- **Riri Cloudflare manual deploy** expects `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `RIRI_OWN_USER_ID`. It finds or creates the free D1 database, initializes the schema, and publishes the Worker plus its static admin screen.
+- In the Cloudflare dashboard, configure the private Worker values `BOT_SECRET`, `ADMIN_SECRET`, `MODAL_URL`, `MODAL_SECRET` and the session credentials for the X account that you control. Do not put any credentials in repository files. Initial X reading and sending stay off.
+- Visit `https://YOUR-WORKER.workers.dev/admin/` on your phone and enter your `ADMIN_SECRET` to review estimates or approve a higher allowance. This is **not a payment transaction**.
+- Switch `X_POLL_ENABLED` and `AUTO_SEND_ENABLED` on only after live testing and a verified Workspace spend limit.
+
+The manual Actions workflows usually must exist on the repository's default branch before GitHub makes them available in the mobile Actions UI. All external service accounts, secrets, and payment methods remain under your control.
