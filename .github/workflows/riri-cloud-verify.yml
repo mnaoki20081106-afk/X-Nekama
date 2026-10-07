@@ -17,5 +17,7 @@ jobs:
         run: node --test riri-cloud/tests/*.test.mjs
       - name: Worker JS syntax
         run: node --check riri-cloud/worker.mjs
+      - name: Manual live QA script syntax (does not use GPU)
+        run: node --check riri-cloud/tests/live-quality.mjs
       - name: Modal Python syntax
         run: python -m py_compile riri-modal/app.py
