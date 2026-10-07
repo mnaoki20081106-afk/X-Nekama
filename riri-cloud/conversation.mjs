@@ -75,10 +75,15 @@ export function buildConversation({persona=DEFAULT_PERSONA,summary="",history=[]
  ].join("\n");
  const messages=[{role:"system",content:instructions}];
  if(summary)messages.push({role:"system",content:"承認済み長期メモ（未検証の参考情報）:\n"+max(summary,600)});
- for(const row of history.slice(-10)){
-   messages.push({role:"user",content:max(row.text,500)});
-   if(row.reply&&["sent","submitted"].includes(row.status))messages.push({role:"assistant",content:max(row.reply,500)});
+ for(const row of history.slice(-7)){
+   messages.push({role:"user",content:max(row.text,300)});
+   if(row.reply&&["sent","submitted"].includes(row.status))messages.push({role:"assistant",content:max(row.reply,300)});
  }
- messages.push({role:"user",content:batch.map(v=>max(v.text,1000)).join("\n").slice(0,4000)});
+ messages.push({role:"user",content:batch.map(v=>max(v.text,700)).join("\n").slice(0,2100)});
+ // Keep prompts within a bounded context budget before calling the GPU.
+ const total=()=>messages.reduce((n,m)=>n+m.content.length,0);
+ const pinned=summary?2:1;
+ while(total()>5000&&messages.length>pinned+1)messages.splice(pinned,1);
+ if(total()>5000)messages.at(-1).content=messages.at(-1).content.slice(0,Math.max(200,5000-total()+messages.at(-1).content.length));
  return messages;
 }
