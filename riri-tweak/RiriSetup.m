@@ -93,16 +93,12 @@ static NSString *Origin(NSString *input) {
     for(UIView *v in self.stack.arrangedSubviews) { [self.stack removeArrangedSubview:v]; [v removeFromSuperview]; }
     [self label:self.step==0 ? @"初回セットアップ" : @"接続確認"];
     if(self.step==0) {
-        [self label:@"Ririを接続しましょう"];
-        [self label:@"受信したDMをあなたのCloudflareアカウントへ送り、AIが返信を作成します。対応するXでは自動返信します。接続確認後に開始します。"];
-        [self button:@"Cloudflareで無料セットアップ" action:@selector(cloudflare)];
-        self.status=[self label:@"ログイン・許可後に専用の処理と会話保存先を自動作成します。無料プランでは枠を使い切ると返信を停止します。有料プランのアカウントでは料金が発生する場合があります。Cloudflareの利用規約への同意やメール確認が必要な場合があります。"] ;
-        [self button:@"APIトークンでCloudflareを設定" action:@selector(tokenSetup)];
-        [self button:@"既存の接続先を設定" action:@selector(connectPage)];
+        [self label:@"Qwen 3.8サーバーを接続しましょう"];
+        [self label:@"受信したDMをあなたの自前サーバーへ送り、サーバー上で動くQwen 3.8が返信を作成します。対応するXでは自動返信します。外部AI APIは使いません。"];
+        [self button:@"Qwen 3.8サーバーに接続" action:@selector(connectPage)];
+        self.status=[self label:@"先に riri-qwen-server をGPUサーバーで起動し、HTTPSの接続先とBOT_SECRETを用意してください。接続確認後に開始します。"] ;
     } else {
-        [self label:@"接続先の設定"];
-        [self button:@"Cloudflareで自動設定" action:@selector(cloudflare)];
-        [self button:@"APIトークンでCloudflareを設定" action:@selector(tokenSetup)];
+        [self label:@"Qwen 3.8サーバーの接続先"];
         self.host=[UITextField new]; self.host.placeholder=@"https://dm.example.com"; self.host.keyboardType=UIKeyboardTypeURL;
         self.secret=[UITextField new]; self.secret.placeholder=@"接続キー"; self.secret.secureTextEntry=YES;
         for(UITextField *f in @[self.host,self.secret]) {
@@ -190,7 +186,7 @@ static NSString *Origin(NSString *input) {
                 s.host.text=origin; s.secret.text=secret; s.host.enabled=NO; s.secret.enabled=NO;
             } else if(ok) s.status.text=@"設定を保存できませんでした。アプリの署名・Keychain権限を確認してください。";
             else if(code==403) s.status.text=@"接続キーが一致しません。コピーし直してください。";
-            else if(code==503) s.status.text=@"AIを利用できません。無料枠・Cloudflareの利用開始・接続先の稼働状態を確認してください。";
+            else if(code==503) s.status.text=@"Qwen 3.8を利用できません。GPU・vLLM・モデルの起動状態を確認してください。";
             else if(code==404) s.status.text=@"サーバーをチュートリアル対応版へ更新してください。";
             else s.status.text=@"接続できませんでした。URL・証明書・サーバーの稼働状態を確認してください。";
         });
