@@ -18,6 +18,7 @@
 </section>
 <section><h2>長期記憶の確認・削除</h2><p>上の会話IDを指定すると、その会話の保存メモを確認できます。削除後も、D1の生の会話履歴は別途残ります。</p>
 <button id="memory">記憶を表示</button><button class="danger" id="forget">記憶を削除</button></section>
+<section><h2>モデル接続の実機確認</h2><p>Modal上のQwenに短い文章を送り、実際に応答できるか調べます。GPUクレジットを消費するため、ボタンを押した場合だけ実行します。</p><button id="check-model">Qwen接続を確認（GPU利用あり）</button></section>
 <section><h2>性能測定</h2><button id="metrics">過去7日の推論時間を表示</button><pre id="result">キーを入力して、操作を選択してください。</pre></section>
 <p><small>接続キーはブラウザーに保存しません。保存した会話・プロフィールはCloudflare D1内に置かれます。</small></p>
 <script>
@@ -34,5 +35,6 @@ el('reset').onclick=()=>{if(confirm('指定範囲のプロフィール設定を�
 el('memory').onclick=()=>call(path('memory'));
 el('forget').onclick=()=>{if(!el('cid').value.trim()){out.textContent='会話IDを入力してください';return}if(confirm('この会話の長期メモを削除しますか？'))call(path('memory'),'DELETE')};
 el('metrics').onclick=()=>call('/admin/metrics');
+el('check-model').onclick=()=>{if(confirm('実際にModal GPUを起動します。無料枠や課金を消費する可能性があります。実行しますか？'))call('/admin/check-model','POST',{confirm_compute_cost:true})};
 </script>
 </body></html>
