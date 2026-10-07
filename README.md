@@ -19,7 +19,7 @@ Cloudflareを管理・予約バックエンドにし、iPhoneと投稿側の出�
 - Xへの接続・参考投稿取得・画像アップロード・投稿: XActionsのWebセッション経路
 - X向けサーバー通信: WARP確認済み、またはGluetun＋固定出口IP・国の一致を確認できる経路のみ許可
 - 投稿文/文体分析/画像生成: 利用者自身の端末にあるX/Grokへプロンプトと参照画像を渡す
-- X Developer / 有料X API: 不要
+- 予約投稿・公開投稿では X Developer / 有料X API: 不要（オプションのXChat DM機能は別）
 - XAI_API_KEY: 不要
 - 運営の共有AIキー: 不要
 
@@ -46,7 +46,7 @@ X-NekamaはGrokへ直接課金APIを呼ばず、キャラクター設定・参�
 
 ## X投稿
 
-X Developer / 有料X APIは使用しません。
+公開投稿・予約投稿機能ではX Developer / 有料X APIは使用しません。暗号化DMのXChat自動返信は下記のオプション機能として分離しています。
 
 XActionsのHTTPクライアントとGraphQL更新追従コードを `vendor/xactions/` に収録しています（Apache-2.0）。
 
@@ -181,3 +181,16 @@ Xパスワードは接続処理時だけ使い、保存しません。
 現在の開発repositoryは過去commit metadataに個人メールが含まれるため、**配布用ボタンはクリーンrepo作成後に有効化**します。
 
 ボタン方式で問題が起きた場合は `docs/CLOUDFLARE_SETUP_JA.md` の完全自動セットアップスクリプトを使用できます。
+
+
+## XChat DM自動返信（オプション）
+
+暗号化DMの自動返信は `xchat-bot/` に分離して実装しています。Vercel Chat SDK の `@chat-adapter/x/chat` と、X公式の `@xdevplatform/chat-xdk` / `@xdevplatform/xdk` を使用します。
+
+- `chat.received` を受信して復号・署名検証
+- 受信DMだけを起点に自動返信
+- 返信をXChat形式で暗号化・署名して送信
+- 既存のXActions予約投稿経路は変更しない
+- `XCHAT_REPLY_URL` を設定すると、任意の返信生成サービスへ本文を渡して `{"reply":"..."}` を受け取り、そのまま返信可能
+
+この機能だけは、XChatの仕様上 **X Developerアプリ・OAuth2ユーザートークン・XChat暗号鍵の初期登録** が必要です。通常の予約投稿は従来どおりXActions経路のままで、X Developer設定は不要です。セットアップは [`xchat-bot/README.md`](xchat-bot/README.md) を参照してください。

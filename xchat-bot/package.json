@@ -1,0 +1,20 @@
+{
+  "name": "x-nekama-xchat-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "start": "node index.mjs",
+    "check": "node --check index.mjs && node --check reply.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@chat-adapter/state-memory": "4.41.1",
+    "@chat-adapter/x": "4.41.1",
+    "@xdevplatform/chat-xdk": "0.4.3",
+    "@xdevplatform/xdk": "0.6.6",
+    "chat": "4.41.1",
+    "juicebox-sdk": "0.3.6"
+  }
+}

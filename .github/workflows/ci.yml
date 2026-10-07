@@ -12,6 +12,12 @@ jobs:
           node-version: '24'
       - run: npm ci --ignore-scripts
       - run: npm test
+      - name: Install XChat DM bot dependencies
+        working-directory: xchat-bot
+        run: npm install --ignore-scripts
+      - name: Test XChat DM bot
+        working-directory: xchat-bot
+        run: npm test && npm run check && node -e "Promise.all([import('chat'),import('@chat-adapter/x/chat'),import('@chat-adapter/state-memory')])"
       - name: Test IPA build helpers
         run: python3 -m unittest discover -s ios-tweak/tests -p 'test_*.py'
       - run: node --check server.mjs
