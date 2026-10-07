@@ -1,0 +1,30 @@
+name: Riri live Qwen dialog QA (manual, GPU billing)
+on:
+  workflow_dispatch:
+    inputs:
+      turns:
+        description: "Synthetic conversation turns (1-20); Modal GPU cost applies"
+        type: choice
+        default: "10"
+        options:
+          - "5"
+          - "10"
+          - "20"
+permissions:
+  contents: read
+jobs:
+  live-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test real model with synthetic chat (no X writes)
+        env:
+          RUN_LIVE_QA: YES
+          MODAL_URL: ${{ secrets.RIRI_MODAL_URL }}
+          MODAL_SECRET: ${{ secrets.RIRI_MODAL_SECRET }}
+          MAX_TURNS: ${{ inputs.turns }}
+        run: node riri-cloud/tests/live-quality.mjs
