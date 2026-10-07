@@ -16,3 +16,8 @@ X_POLL_ENABLED = "false"
 AUTO_SEND_ENABLED = "false"
 INTERNAL_FREE_CENTS = "1500"
 ESTIMATED_REQUEST_CENTS = "25"
+
+[assets]
+directory = "./public"
+html_handling = "auto-trailing-slash"
+not_found_handling = "none"
