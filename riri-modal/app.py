@@ -24,7 +24,7 @@ cache = modal.Volume.from_name("riri-qwen38-hf-cache", create_if_missing=True)
     memory=8192,
     min_containers=0,
     max_containers=1,
-    scaledown_window=45,
+    scaledown_window=90,
     startup_timeout=900,
     timeout=600,
     volumes={"/cache": cache},
@@ -47,7 +47,7 @@ class QwenModel:
     @modal.method()
     def respond(self, messages: list[dict]) -> str:
         from vllm import SamplingParams
-        params = SamplingParams(temperature=0.7, top_p=0.8, max_tokens=240)
+        params = SamplingParams(temperature=0.7, top_p=0.8, max_tokens=320)
         answer = self.llm.chat(
             messages,
             sampling_params=params,
