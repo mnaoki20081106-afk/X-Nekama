@@ -47,5 +47,6 @@ test('model JSON and text parsing, no thinking, invalid output',()=>{
  assert.deepEqual(modelOutput({reply:'{"reply":"了解！","memory_summary":"カレーが好き"}'}),{reply:'了解！',memory_summary:'カレーが好き'});
  assert.deepEqual(modelOutput({reply:'<think>内部</think>ありがとう',memory_summary:'親切な人'}),{reply:'ありがとう',memory_summary:'親切な人'});
  assert.throws(()=>modelOutput({reply:''}),/invalid_model_output/);
+ assert.throws(()=>modelOutput({reply:'{"reply":"unclosed"'}),/unparseable_model_json/);
  assert.throws(()=>modelOutput({reply:'a'.repeat(2001)}),/invalid_model_output/);
 });
