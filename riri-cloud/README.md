@@ -46,3 +46,34 @@ After reviewing and merging this branch into the default branch, the two manual 
 - Switch `X_POLL_ENABLED` and `AUTO_SEND_ENABLED` on only after live testing and a verified Workspace spend limit.
 
 The manual Actions workflows usually must exist on the repository's default branch before GitHub makes them available in the mobile Actions UI. All external service accounts, secrets, and payment methods remain under your control.
+
+## Natural dialogue v2: memory, bursts, personas, reply speed and quality tests
+
+### 1. Long-term memory
+
+D1 table `conversation_memory` stores a compact rolling per-conversation summary. The self-hosted Modal Qwen3.8 receives the previous summary, recent dialogue and new messages together; it returns JSON `{reply,memory_summary}` in one GPU invocation to avoid a separate paid summarization call. The Worker strips common credentials/contact fields from generated summaries, but automated filtering is not infallible: avoid sending sensitive data to the bot. This is a **best-effort summary**, not guaranteed recall.
+
+Protected API: `GET /admin/memory?conversation_id=123-456`, `DELETE /admin/memory?conversation_id=123-456` with `X-Admin-Secret`.
+
+### 2. Multiple incoming messages
+
+Same-conversation queued messages are joined after a **60-second quiet window** (configurable `DM_QUIET_MS`, clamped 15–300 seconds). One GPU call creates **one** answer for up to six recent message fragments; all messages in the group are atomically claimed by state transitions, with older rows marked `rolled_up` to prevent one reply per fragment. D1 `conversation_leases` reduce concurrent processing. Newer queued messages cannot overtake an older unsubmitted draft.
+
+### 3. Configurable persona
+
+Profile can be set globally or for a numeric conversation ID. Personality fields include display name, tone, interests, about, interaction style, and reply length. Profiles are stored in D1 and validated server-side. The model is instructed to disclose AI automation if asked and to avoid fabricated real-world activity or deceptive money solicitation.
+
+Phone page: `https://YOUR-WORKER.workers.dev/settings/`. Admin endpoints `GET|POST|DELETE /admin/profile` use the `X-Admin-Secret` header, with optional `?conversation_id=123-456`. `POST` takes `{"persona":{"display_name":"Riri AI","tone":"柔らかい日本語","interests":["映画"],"reply_length":"short","about":"XのAIアシスタント","interaction":"相手の質問に答える"}}`.
+
+### 4. Faster reply, limited spend
+
+Cloudflare cron is **every minute**, with X polling at most **every 2 minutes** during the configured JST windows by default. There is no real X push hook in this implementation. The GPU still scales to zero; Modal idle scale-down is 90 seconds to reuse a model briefly between nearby messages. Cold start can take minutes and is not eliminated. Increasing warm idle time can cost more, so watch the real Modal Workspace spend limit. Existing approval/account defaults remain unchanged.
+
+### 5. Repeatable tests
+
+- `node --test riri-cloud/tests/*.test.mjs`: isolated policy tests and D1/Modal mock end-to-end simulations.
+- `python -m py_compile riri-modal/app.py`: syntax test.
+- GitHub Actions **Riri cloud and Modal checks**: automatically runs these on `main` and the feature branch.
+- GitHub Actions **Riri live Qwen dialog QA (manual, GPU billing)**: only when deliberately triggered, performs up to 20 *synthetic* Japanese DM exchanges against the real Modal GPU, measures average/p95 inference latency, checks concise answers and AI disclosure. Requires repository secrets `RIRI_MODAL_URL` and `RIRI_MODAL_SECRET` and an actual deployed Modal model. Costs real GPU credits. It **does not send X messages**.
+
+**Still untested:** X live ingress/egress, encrypted XChat, actual GPU model loading, physical iPhone behavior, invoice amount, and real conversation quality. The nonofficial X endpoints may cease to work. All cloud credentials/payment setup require owner approval; deployment not automatic.
