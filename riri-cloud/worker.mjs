@@ -1,5 +1,6 @@
 
 // Riri Cloudflare bridge. No paid inference or X write without explicit opt-in.
+import {DEFAULT_PERSONA,validatePersona,buildConversation,groupReady,modelOutput} from './conversation.mjs';
 const json=(v,status=200)=>new Response(JSON.stringify(v),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}});
 const plain=v=>String(v??'').trim();
 const required=(s)=>typeof s==='string'&&s.length>=32;
@@ -51,20 +52,53 @@ async function ingest(db,v,source='tweak'){
  const q=await db.prepare("INSERT OR IGNORE INTO messages(message_id,sender_id,conversation_id,text,timestamp_ms,source,status) VALUES(?,?,?,?,?,?,'queued')").bind(v.message_id,v.sender_id,v.conversation_id,v.text,v.timestamp_ms,source).run();
  return Boolean(q.meta.changes);
 }
-async function infer(env,msg){
+const validConversationId=(v)=>typeof v==='string'&&/^[0-9-]{1,120}$/.test(v);
+async function personaFor(env,cid){
+ const row=await env.DB.prepare("SELECT config FROM persona_configs WHERE scope IN ('default',?) ORDER BY (scope=?) DESC LIMIT 1").bind(cid,cid).first();
+ if(!row)return DEFAULT_PERSONA;
+ try{return validatePersona(JSON.parse(row.config));}catch{return DEFAULT_PERSONA;}
+}
+async function memoryFor(env,cid){
+ const row=await env.DB.prepare("SELECT summary FROM conversation_memory WHERE conversation_id=?").bind(cid).first();
+ return row?.summary||'';
+}
+async function infer(env,batch,nowMs=Date.now()){
  if(!env.MODAL_URL||!env.MODAL_SECRET)return false;
  if(!await reserve(env))return 'approval_required';
- const history=await env.DB.prepare("SELECT text,reply,status FROM messages WHERE conversation_id=? AND timestamp_ms<=? AND message_id<>? ORDER BY timestamp_ms DESC LIMIT 8").bind(msg.conversation_id,msg.timestamp_ms,msg.message_id).all();
- const messages=[{role:'system',content:plain(env.SYSTEM_PROMPT)||'あなたはXのDM自動応答AIです。自動応答だと尋ねられたら正直に説明します。短く自然な日本語で返してください。金銭の要求や身分の偽装をしないでください。'}];
- for(const x of history.results.reverse()){messages.push({role:'user',content:x.text});if(x.reply&&x.status==='sent')messages.push({role:'assistant',content:x.reply});}
- messages.push({role:'user',content:msg.text});
- const r=await fetch(env.MODAL_URL,{method:'POST',headers:{authorization:'Bearer '+env.MODAL_SECRET,'content-type':'application/json'},body:JSON.stringify({messages}),signal:AbortSignal.timeout(480000)});
- if(!r.ok)throw Error('modal_http_'+r.status);
- const d=await r.json(),reply=plain(d?.reply);
- if(!reply||reply.length>4000)throw Error('invalid_model_output');
- await env.DB.prepare("UPDATE messages SET status='draft',reply=?,updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='generating'").bind(reply,msg.message_id).run();
- return true;
+ const cid=batch[0].conversation_id,latest=batch.at(-1);
+ const [person,summary,history]=await Promise.all([
+   personaFor(env,cid),memoryFor(env,cid),
+   env.DB.prepare("SELECT text,reply,status FROM messages WHERE conversation_id=? AND timestamp_ms<? AND status NOT IN ('baseline','ignored','generating','queued') ORDER BY timestamp_ms DESC LIMIT 10").bind(cid,batch[0].timestamp_ms).all()
+ ]);
+ const messages=buildConversation({persona:person,summary,history:history.results.reverse(),batch:batch.slice(-6),now:new Date(nowMs)});
+ const begun=Date.now();
+ try{
+  const r=await fetch(env.MODAL_URL,{method:'POST',headers:{authorization:'Bearer '+env.MODAL_SECRET,'content-type':'application/json'},body:JSON.stringify({messages}),signal:AbortSignal.timeout(480000)});
+  if(!r.ok)throw Error('modal_http_'+r.status);
+  const result=modelOutput(await r.json());
+  // Durable summary, scoped to the conversation. Truncated and scrubbed by policy.
+  if(result.memory_summary){
+    await env.DB.prepare("INSERT INTO conversation_memory(conversation_id,summary,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(conversation_id) DO UPDATE SET summary=excluded.summary,updated_at=CURRENT_TIMESTAMP")
+     .bind(cid,result.memory_summary).run();
+  }
+  // Older messages are represented by the one combined answer; never reply to each separately.
+  for(const msg of batch.slice(0,-1)){
+    await env.DB.prepare("UPDATE messages SET status='rolled_up',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='generating'").bind(msg.message_id).run();
+  }
+  await env.DB.prepare("UPDATE messages SET status='draft',reply=?,updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='generating'").bind(result.reply,latest.message_id).run();
+  await env.DB.prepare("INSERT INTO inference_metrics(created_at,conversation_id,elapsed_ms,ok) VALUES(CURRENT_TIMESTAMP,?,?,1)").bind(cid,Date.now()-begun).run();
+  return true;
+ }catch(error){
+  await env.DB.prepare("INSERT INTO inference_metrics(created_at,conversation_id,elapsed_ms,ok) VALUES(CURRENT_TIMESTAMP,?,?,0)").bind(cid,Date.now()-begun).run();
+  throw error;
+ }
 }
+async function acquireLease(db,cid,nowMs){
+ const until=nowMs+12*60*1000;
+ const row=await db.prepare("INSERT INTO conversation_leases(conversation_id,lease_until) VALUES(?,?) ON CONFLICT(conversation_id) DO UPDATE SET lease_until=excluded.lease_until WHERE conversation_leases.lease_until<? RETURNING lease_until").bind(cid,until,nowMs).first();
+ return row?.lease_until===until;
+}
+async function releaseLease(db,cid){await db.prepare("DELETE FROM conversation_leases WHERE conversation_id=?").bind(cid).run();}
 function xHeaders(env){
  if(!env.X_AUTH_TOKEN||!env.X_CT0||!env.X_WEB_BEARER)throw Error('x_auth_missing');
  return {'authorization':'Bearer '+env.X_WEB_BEARER,'cookie':'auth_token='+env.X_AUTH_TOKEN+'; ct0='+env.X_CT0,
@@ -102,29 +136,61 @@ async function sendX(env,msg){
   throw error;
  }
 }
-async function cycle(env){
- if(!activeJST()||env.AUTO_SEND_ENABLED!=='true')return {status:'inactive'};
- const found=await pollX(env);
- const pending=(await env.DB.prepare("SELECT * FROM messages WHERE status IN ('queued','draft') AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 4").all()).results;
- let generated=0,sent=0,blocked=0;
- for(const msg of pending){
-  let current=msg;
-  if(current.status==='queued'){
-   const lock=await env.DB.prepare("UPDATE messages SET status='generating',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='queued' RETURNING message_id").bind(msg.message_id).first();
-   if(!lock)continue;
-   try{
-    const ok=await infer(env,msg);
-    if(ok==='approval_required'){blocked++;await env.DB.prepare("UPDATE messages SET status='awaiting_approval' WHERE message_id=? AND status='generating'").bind(msg.message_id).run();continue;}
-    if(!ok){await env.DB.prepare("UPDATE messages SET status='needs_review' WHERE message_id=? AND status='generating'").bind(msg.message_id).run();continue;}
-    generated++;current=await env.DB.prepare('SELECT * FROM messages WHERE message_id=?').bind(msg.message_id).first();
-   }catch(e){console.error('generate_failed',String(e));await env.DB.prepare("UPDATE messages SET status='needs_review' WHERE message_id=? AND status='generating'").bind(msg.message_id).run();continue;}
-  }
-  if(current?.status!=='draft'||env.X_POLL_ENABLED!=='true')continue;
-  const locked=await env.DB.prepare("UPDATE messages SET status='claimed',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='draft' RETURNING message_id").bind(msg.message_id).first();
-  if(!locked)continue;
-  try{await sendX(env,current);sent++;}catch(e){console.error('x_send_uncertain',String(e));}
+export async function cycle(env,nowMs=Date.now()){
+ if(!activeJST(new Date(nowMs))||env.AUTO_SEND_ENABLED!=='true')return {status:'inactive'};
+ let found=0;
+ const pollEvery=Math.max(1,Math.min(10,Number(env.X_POLL_EVERY_MINUTES)||2));
+ if(Math.floor(nowMs/60000)%pollEvery===0)found=await pollX(env);
+ const db=env.DB;
+ let generated=0,sent=0,blocked=0,waiting=0;
+ const drafts=(await db.prepare("SELECT * FROM messages WHERE status='draft' AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 4").all()).results;
+ for(const msg of drafts){
+  if(env.X_POLL_ENABLED!=='true')continue;
+  const lock=await db.prepare("UPDATE messages SET status='claimed',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='draft' RETURNING message_id").bind(msg.message_id).first();
+  if(!lock)continue;
+  try{await sendX(env,msg);sent++;}catch(e){console.error('x_send_uncertain',String(e));}
  }
- return {found,generated,sent,blocked};
+ const pending=(await db.prepare("SELECT * FROM messages WHERE status='queued' AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 80").all()).results;
+ const debounce=Math.max(15000,Math.min(300000,Number(env.DM_QUIET_MS)||60000));
+ const groups=groupReady(pending,nowMs,debounce,Math.max(1,Math.min(4,Number(env.MAX_GROUPS_PER_TICK)||2)));
+ for(const batch of groups){
+  const cid=batch[0].conversation_id;
+  if(!(await acquireLease(db,cid,nowMs)))continue;
+  try{
+   // A queued conversation must not overtake a previous draft or in-flight answer.
+   const busy=await db.prepare("SELECT message_id FROM messages WHERE conversation_id=? AND status IN ('draft','claimed','generating') LIMIT 1").bind(cid).first();
+   if(busy)continue;
+   const ids=[];
+   for(const msg of batch){
+    const changed=await db.prepare("UPDATE messages SET status='generating',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='queued' RETURNING message_id").bind(msg.message_id).first();
+    if(changed)ids.push(msg.message_id);
+   }
+   if(ids.length!==batch.length){for(const id of ids)await db.prepare("UPDATE messages SET status='queued' WHERE message_id=? AND status='generating'").bind(id).run();continue;}
+   try{
+    const ok=await infer(env,batch,nowMs);
+    if(ok==='approval_required'){
+      blocked++;
+      for(const id of ids)await db.prepare("UPDATE messages SET status='awaiting_approval' WHERE message_id=? AND status='generating'").bind(id).run();
+      continue;
+    }
+    if(!ok){for(const id of ids)await db.prepare("UPDATE messages SET status='needs_review' WHERE message_id=? AND status='generating'").bind(id).run();continue;}
+    generated++;
+    if(env.X_POLL_ENABLED==='true'){
+      const last=await db.prepare('SELECT * FROM messages WHERE message_id=?').bind(batch.at(-1).message_id).first();
+      const claimed=await db.prepare("UPDATE messages SET status='claimed' WHERE message_id=? AND status='draft' RETURNING message_id").bind(last.message_id).first();
+      if(claimed){try{await sendX(env,last);sent++;}catch(e){console.error('x_send_uncertain',String(e));}}
+    }
+   }catch(e){
+    console.error('generate_failed',String(e));
+    for(const id of ids)await db.prepare("UPDATE messages SET status='needs_review' WHERE message_id=? AND status='generating'").bind(id).run();
+   }
+  }finally{await releaseLease(db,cid);}
+ }
+ if(Math.floor(nowMs/60000)%60===0){
+  await db.prepare("DELETE FROM inference_metrics WHERE created_at < datetime('now','-30 days')").run();
+ }
+ waiting=groups.length;
+ return {found,generated,sent,blocked,waiting};
 }
 export default {
  async scheduled(event,env,ctx){ctx.waitUntil(cycle(env).catch(e=>console.error('riri_cycle',String(e))));},
