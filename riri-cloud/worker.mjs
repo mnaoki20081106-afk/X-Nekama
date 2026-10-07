@@ -203,6 +203,43 @@ export default {
    const counts=await db.prepare('SELECT status,COUNT(*) AS n FROM messages GROUP BY status').all();
    return json({month,active:activeJST(),x_poll_enabled:env.X_POLL_ENABLED==='true',auto_send_enabled:env.AUTO_SEND_ENABLED==='true',estimated_spend_cents:budget?.estimated_cents||0,free_internal_cents:Number(env.INTERNAL_FREE_CENTS||1500),approved_extra_cents:budget?.approved_extra_cents||0,counts:counts.results});
   }
+  if(path==='/admin/profile'){
+   if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
+   const cid=new URL(req.url).searchParams.get('conversation_id');
+   if(cid&&!validConversationId(cid))return json({error:'invalid_conversation_id'},400);
+   const scope=cid||'default';
+   if(req.method==='GET')return json({scope,persona:await personaFor(env,scope)});
+   if(req.method==='DELETE'){
+     await db.prepare("DELETE FROM persona_configs WHERE scope=?").bind(scope).run();
+     return json({status:'deleted',scope});
+   }
+   if(req.method==='POST'){
+     let value;try{value=await body(req);}catch{return json({error:'invalid_json'},400);}
+     let profile;try{profile=validatePersona(value?.persona);}catch(e){return json({error:String(e.message)},400);}
+     await db.prepare("INSERT INTO persona_configs(scope,config,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(scope) DO UPDATE SET config=excluded.config,updated_at=CURRENT_TIMESTAMP").bind(scope,JSON.stringify(profile)).run();
+     return json({status:'saved',scope,persona:profile});
+   }
+   return json({error:'method_not_allowed'},405);
+  }
+  if(path==='/admin/memory'){
+   if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
+   const cid=new URL(req.url).searchParams.get('conversation_id');
+   if(!validConversationId(cid))return json({error:'invalid_conversation_id'},400);
+   if(req.method==='GET'){
+     const row=await db.prepare("SELECT summary,updated_at FROM conversation_memory WHERE conversation_id=?").bind(cid).first();
+     return json({conversation_id:cid,memory:row||null});
+   }
+   if(req.method==='DELETE'){
+     await db.prepare("DELETE FROM conversation_memory WHERE conversation_id=?").bind(cid).run();
+     return json({status:'deleted',conversation_id:cid});
+   }
+   return json({error:'method_not_allowed'},405);
+  }
+  if(path==='/admin/metrics'&&req.method==='GET'){
+   if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
+   const row=await db.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) AS completed,ROUND(AVG(CASE WHEN ok=1 THEN elapsed_ms END)) AS average_ms, MAX(CASE WHEN ok=1 THEN elapsed_ms END) AS max_ms FROM inference_metrics WHERE created_at >= datetime('now','-7 days')").first();
+   return json({period:'last_7_days',inference:row||null,note:'Metrics exclude X polling, GPU scheduling time before request, and message delivery confirmation.'});
+  }
   if(path==='/admin/approve'&&req.method==='POST'){
    if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
    let v;try{v=await body(req);}catch{return json({error:'invalid_json'},400);}
