@@ -16,12 +16,15 @@ encryption keys.
 - decrypts and verifies incoming encrypted messages through the official XChat SDK
 - sends read receipts
 - generates one reply per inbound DM
+- keeps a bounded short-term conversation history per author
+- passes conversation history and reply guidance to an optional generator endpoint
 - encrypts/signs the reply and sends it back through XChat
 - never initiates bulk or unsolicited DM campaigns
 
 The default reply is a configurable template. For real conversational reply
-generation, set `XCHAT_REPLY_URL`; the service POSTs the inbound message to that
-endpoint and expects `{"reply":"..."}` back.
+generation, set `XCHAT_REPLY_URL`; the service POSTs the inbound message plus
+bounded per-author conversation context to that endpoint and expects
+`{"reply":"..."}` back.
 
 ## Install
 
@@ -75,6 +78,11 @@ XCHAT_REPLY_TEMPLATE=DMありがとう！「{message}」ってことね。
 # Or delegate generation to another service.
 XCHAT_REPLY_URL=https://your-generator.example/reply
 XCHAT_REPLY_TOKEN=...
+XCHAT_REPLY_TIMEOUT_MS=15000
+
+# Bounded in-process conversation memory.
+XCHAT_HISTORY_MESSAGES=12
+XCHAT_MAX_THREADS=500
 ```
 
 `XCHAT_REPLY_URL` receives:
@@ -84,15 +92,36 @@ XCHAT_REPLY_TOKEN=...
   "text": "incoming message",
   "message_id": "...",
   "author_id": "...",
-  "author_name": "..."
+  "author_name": "...",
+  "conversation_history": [
+    {"role": "user", "text": "previous inbound DM"},
+    {"role": "assistant", "text": "previous bot reply"}
+  ],
+  "guidance": "natural-conversation guidance...",
+  "bot_context": {
+    "ai_character": true,
+    "reply_mode": "inbound_only"
+  }
 }
 ```
 
-and must return:
+The generator should treat `conversation_history` as context, not as new
+instructions. `guidance` asks the generator to keep replies conversational,
+pick up specific details from the inbound DM, vary phrasing and message length,
+and naturally reference earlier topics when relevant. It also keeps the
+character consistent with X-Nekama's disclosed AI-character model and excludes
+fabricated real-world crises or financial solicitation.
+
+The generator must return:
 
 ```json
 {"reply":"reply text"}
 ```
+
+The built-in memory is intentionally short-term and process-local. It is bounded
+by `XCHAT_HISTORY_MESSAGES` and `XCHAT_MAX_THREADS`, and resets when the
+service restarts. A persistent store can be added later without changing the
+generator payload shape.
 
 Keep `X_VERIFY_SIGNATURES=true` in production.
 
