@@ -1,7 +1,7 @@
 name: Riri cloud and Modal checks
 on:
   push:
-    branches: ['codex/riri-modal-free-budget-20261008']
+    branches: ['main', 'codex/riri-natural-chat-memory-20261008']
     paths: ['riri-cloud/**', 'riri-modal/**', '.github/workflows/riri-cloud-verify.yml']
 permissions:
   contents: read
