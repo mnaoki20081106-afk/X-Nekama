@@ -38,7 +38,7 @@ class QwenModel:
             model=MODEL_ID,
             trust_remote_code=False,
             dtype="auto",
-            max_model_len=4096,
+            max_model_len=8192,
             gpu_memory_utilization=0.90,
             tensor_parallel_size=1,
         )
