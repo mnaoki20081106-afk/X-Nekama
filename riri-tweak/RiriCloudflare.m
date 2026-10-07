@@ -6,7 +6,7 @@
 #import <Security/Security.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
-static NSString *B64(NSData *d) {return [[[d base64EncodedStringWithOptions:0] stringByReplacingOccurrencesOfString:@"+" withString:@"-"] stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"=" withString:@""];}
+static NSString *B64(NSData *d) {return [[[[d base64EncodedStringWithOptions:0] stringByReplacingOccurrencesOfString:@"+" withString:@"-"] stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"=" withString:@""];}
 static NSString *Random(void) {uint8_t b[32];if(SecRandomCopyBytes(kSecRandomDefault,32,b)!=errSecSuccess) return nil;return B64([NSData dataWithBytes:b length:32]);}
 @interface RiriCF : NSObject <ASWebAuthenticationPresentationContextProviding>
 @property(nonatomic,strong) UIViewController *presenter;
@@ -124,9 +124,19 @@ static NSString *Random(void) {uint8_t b[32];if(SecRandomCopyBytes(kSecRandomDef
     }];
 }
 @end
-void RiriCloudflareBegin(UIViewController *presenter,NSString *ownID,void (^completion)(NSDictionary *,NSString *)) {
+static RiriCF *NewFlow(UIViewController *presenter,NSString *ownID,void (^completion)(NSDictionary *,NSString *)) {
     RiriCF *flow=[RiriCF new];flow.keepAlive=flow;flow.presenter=presenter;flow.ownID=ownID;flow.completion=completion;
     NSString *install=[NSUserDefaults.standardUserDefaults stringForKey:@"riri.cf.install.v1"];
     if(!install){install=[[[NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString] substringToIndex:12];[NSUserDefaults.standardUserDefaults setObject:install forKey:@"riri.cf.install.v1"];}
-    flow.installID=install;[flow start];
+    flow.installID=install;return flow;
+}
+
+void RiriCloudflareBegin(UIViewController *presenter,NSString *ownID,void (^completion)(NSDictionary *,NSString *)) {
+    [NewFlow(presenter,ownID,completion) start];
+}
+void RiriCloudflareTokenBegin(UIViewController *presenter,NSString *ownID,NSString *token,void (^completion)(NSDictionary *,NSString *)) {
+    RiriCF *flow=NewFlow(presenter,ownID,completion);
+    flow.token=token;flow.secret=RiriConnection()[@"secret"];if(flow.secret.length<32) flow.secret=Random();
+    if(!flow.secret) {[flow finish:nil error:@"安全な接続キーを生成できませんでした。"];return;}
+    [flow accounts];
 }

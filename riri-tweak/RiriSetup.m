@@ -97,10 +97,12 @@ static NSString *Origin(NSString *input) {
         [self label:@"受信したDMをあなたのCloudflareアカウントへ送り、AIが返信を作成します。対応するXでは自動返信します。接続確認後に開始します。"];
         [self button:@"Cloudflareで無料セットアップ" action:@selector(cloudflare)];
         self.status=[self label:@"ログイン・許可後に専用の処理と会話保存先を自動作成します。無料プランでは枠を使い切ると返信を停止します。有料プランのアカウントでは料金が発生する場合があります。Cloudflareの利用規約への同意やメール確認が必要な場合があります。"] ;
+        [self button:@"APIトークンでCloudflareを設定" action:@selector(tokenSetup)];
         [self button:@"既存の接続先を設定" action:@selector(connectPage)];
     } else {
         [self label:@"接続先の設定"];
         [self button:@"Cloudflareで自動設定" action:@selector(cloudflare)];
+        [self button:@"APIトークンでCloudflareを設定" action:@selector(tokenSetup)];
         self.host=[UITextField new]; self.host.placeholder=@"https://dm.example.com"; self.host.keyboardType=UIKeyboardTypeURL;
         self.secret=[UITextField new]; self.secret.placeholder=@"接続キー"; self.secret.secureTextEntry=YES;
         for(UITextField *f in @[self.host,self.secret]) {
@@ -124,13 +126,31 @@ static NSString *Origin(NSString *input) {
     [a addAction:[UIAlertAction actionWithTitle:@"ログインして自動設定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
         NSString *uid=a.textFields.firstObject.text;
         if(!uid.length||uid.length>30||[uid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789"].invertedSet].location!=NSNotFound){self.status.text=@"数字IDを入力してください。";return;}
-        self.busy=YES;self.navigationItem.rightBarButtonItem.enabled=NO;self.status.text=@"Cloudflareにログイン後、接続先を作成します…";
-        RiriCloudflareBegin(self,uid,^(NSDictionary *settings,NSString *error){
-            self.busy=NO;self.navigationItem.rightBarButtonItem.enabled=YES;
-            if(!settings){self.status.text=error;return;}
-            self.step=2;[self render];self.host.text=settings[@"origin"];self.secret.text=settings[@"secret"];
-            [self check];
-        });
+        [self provision:uid token:nil];
+    }]];[self presentViewController:a animated:YES completion:nil];
+}
+- (void)provision:(NSString *)uid token:(NSString *)token {
+    if(self.busy) return;
+    self.busy=YES;self.navigationItem.rightBarButtonItem.enabled=NO;self.status.text=@"Cloudflareの接続先を自動設定しています…";
+    void (^done)(NSDictionary *,NSString *)=^(NSDictionary *settings,NSString *error){
+        self.busy=NO;self.navigationItem.rightBarButtonItem.enabled=YES;
+        if(!settings){self.status.text=error;return;}
+        self.step=2;[self render];self.host.text=settings[@"origin"];self.secret.text=settings[@"secret"];[self check];
+    };
+    if(token) RiriCloudflareTokenBegin(self,uid,token,done);
+    else RiriCloudflareBegin(self,uid,done);
+}
+- (void)tokenSetup {
+    if(self.busy) return;
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Cloudflare APIトークン" message:@"ログイン連携が未提供の間も使える設定です。Cloudflareで作成した、アカウントの参照・Workersの編集・D1の編集・Workers AIの利用を許可したトークンを入力してください。トークンは配置中のみ使用し、保存しません。" preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f){f.keyboardType=UIKeyboardTypeNumberPad;f.placeholder=@"自分のXの数字ID";f.text=RiriConnection()[@"own_user_id"];}];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f){f.placeholder=@"Cloudflare APIトークン";f.secureTextEntry=YES;f.autocorrectionType=UITextAutocorrectionTypeNo;f.autocapitalizationType=UITextAutocapitalizationTypeNone;}];
+    [a addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"自動配置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        NSString *uid=a.textFields[0].text;
+        NSString *token=[a.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];a.textFields[1].text=@"";
+        if(!uid.length||uid.length>30||[uid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789"].invertedSet].location!=NSNotFound||token.length<20||token.length>512){self.status.text=@"数字IDと有効なAPIトークンを入力してください。";return;}
+        [self provision:uid token:token];
     }]];[self presentViewController:a animated:YES completion:nil];
 }
 - (void)connectPage {if(self.busy) return;self.step=2; [self render];}
