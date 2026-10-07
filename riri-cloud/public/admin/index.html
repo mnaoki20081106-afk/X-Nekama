@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riri GPU利用承認</title>
+<style>body{font:16px system-ui,sans-serif;max-width:580px;margin:28px auto;padding:16px;line-height:1.6}input,button{font:inherit;padding:12px;border:1px solid #999;border-radius:10px;margin:6px}input{width:90%}pre{padding:16px;border-radius:8px;background:#eee;color:#111;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body>
+<h2>Riri GPU利用承認</h2>
+<p>無料枠を優先し、追加のGPU利用を許可したときだけ推定上限を増やします。これはPayPay決済ではありません。</p>
+<label>管理者用接続キー<input id="key" type="password" autocomplete="off"></label>
+<p><button id="status">現在の利用状況を確認</button></p>
+<p>今月の追加利用の推定上限（合計）</p>
+<button data-extra="0">許可しない</button><button data-extra="200">2 USD</button><button data-extra="400">4 USD</button><button data-extra="600">6 USD</button>
+<pre id="result">未確認</pre>
+<p><small>Modalの実際の請求金額はこの推定値と一致する保証がありません。必ずModalのWorkspace支出上限を設定してください。</small></p>
+<script>
+const view=document.getElementById('result');
+function month(){const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit'}).formatToParts(new Date());return parts.find(x=>x.type==='year').value+'-'+parts.find(x=>x.type==='month').value}
+async function call(path,payload){const headers={'x-admin-secret':document.getElementById('key').value};const config={headers};if(payload){config.method='POST';headers['content-type']='application/json';config.body=JSON.stringify(payload)}try{const response=await fetch(path,config);const data=await response.json();view.textContent=(response.ok?'':'HTTP '+response.status+' : ')+JSON.stringify(data,null,2)}catch(err){view.textContent=String(err)}}
+document.getElementById('status').onclick=()=>call('/admin/status');
+for(const button of document.querySelectorAll('[data-extra]'))button.onclick=()=>{const cents=Number(button.dataset.extra);if(confirm('今月の追加GPU利用推定上限を'+(cents/100)+'米ドルに設定しますか？'))call('/admin/approve',{month:month(),additional_usd_cents:cents,confirm:true})}
+</script></body></html>
