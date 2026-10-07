@@ -1,0 +1,49 @@
+name: Riri Qwen 3.8 self-hosted
+on:
+  push:
+    branches: ['codex/riri-qwen38-selfhost-20261008']
+    paths: ['riri-qwen-server/**', 'riri-tweak/**', '.github/workflows/riri-qwen38-selfhost.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Qwen bridge tests
+        run: node --test riri-qwen-server/tests/*.test.mjs
+      - name: Dependencies
+        run: brew install make ldid
+      - name: GNU Make
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+      - name: iOS SDK
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          git clone -n --depth=1 --filter=tree:0 https://github.com/theos/sdks/
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
+          git checkout
+          mv iPhoneOS16.5.sdk "$THEOS/sdks/"
+      - name: Build tweak
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          cd riri-tweak
+          make clean
+          make FINALPACKAGE=1
+          DYLIB=$(find .theos/obj -name RiriAutoReply.dylib -type f ! -path '*.dSYM/*' | head -n 1)
+          test -n "$DYLIB"
+          lipo "$DYLIB" -verify_arch arm64
+          codesign --force --sign - "$DYLIB"
+          codesign --verify "$DYLIB"
