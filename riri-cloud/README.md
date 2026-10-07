@@ -11,7 +11,7 @@ This prototype separates X DM polling from Qwen GPU inference, and stores recent
 3. Create the Modal secret `riri-modal-auth` with a long `RIRI_MODAL_SECRET`. Deploy `riri-modal/app.py` with `modal deploy riri-modal/app.py`. This requires authentication to your own Modal workspace.
 4. Create a Cloudflare D1 database called `riri-qwen-d1`, initialize it using `riri-cloud/schema.sql`, and configure its UUID in `riri-cloud/wrangler.toml`. In Workers, set your own account ID, a protected Worker connection key, a separate admin key, and the URL/credential of the Modal endpoint as private secrets. Do not include credentials in Git source.
 5. Set `OWN_USER_ID` to your own numeric X ID. Unofficial X session access requires a valid authenticated session that you control; no third-party account credentials should be supplied. Keep `X_POLL_ENABLED=false` and `AUTO_SEND_ENABLED=false` until tests pass.
-6. Once configured, the Worker can be deployed with `npx wrangler deploy`. Cron runs every five minutes. Direct model requests can take considerably longer on a cold GPU.
+6. Once configured, the Worker can be deployed with `npx wrangler deploy`. Cron runs every minute and typically polls X once every two minutes within the configured reply windows. Direct model requests can take considerably longer on a cold GPU.
 
 ## Reply windows (Japan time)
 
