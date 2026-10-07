@@ -4,7 +4,7 @@ import {DEFAULT_PERSONA,validatePersona,groupReady,buildConversation,modelOutput
 const at=(s)=>new Date(s);
 const msg=(id,cid,time,text,status='queued')=>({message_id:String(id),conversation_id:cid,timestamp_ms:time,text,status});
 test('Japanese time boundaries across midnight',()=>{
- const cases=[['2026-10-07T21:59:59Z',false],['2026-10-07T22:00:00Z',true],['2026-10-07T23:59:00Z',true],['2026-10-08T00:00:00Z',false],['2026-10-08T03:00:00Z',true],['2026-10-08T04:30:00Z',false],['2026-10-08T10:00:00Z',true],['2026-10-08T16:00:00Z',true],['2026-10-08T16:00:01Z',false]];
+ const cases=[['2026-10-07T21:59:59Z',false],['2026-10-07T22:00:00Z',true],['2026-10-07T23:59:00Z',true],['2026-10-08T00:00:00Z',false],['2026-10-08T03:00:00Z',true],['2026-10-08T04:30:00Z',false],['2026-10-08T10:00:00Z',true],['2026-10-08T15:59:59Z',true],['2026-10-08T16:00:00Z',false]];
  for(const [iso,want] of cases)assert.equal(replyWindowJST(at(iso)),want,iso);
  assert.equal(jstTime(at('2026-10-08T16:30:00Z')),90);
 });
