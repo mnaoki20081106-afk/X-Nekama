@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install Modal CLI
-        run: python -m pip install modal
+        run: python -m pip install modal fastapi
       - name: Deploy Qwen application
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
