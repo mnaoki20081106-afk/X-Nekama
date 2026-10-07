@@ -1,4 +1,5 @@
 #import "RiriSetup.h"
+#import "RiriCloudflare.h"
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
 
@@ -35,7 +36,7 @@ NSURLSession *RiriSession(void) {
     static NSURLSession *session; static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSURLSessionConfiguration *c=NSURLSessionConfiguration.ephemeralSessionConfiguration;
-        c.HTTPCookieStorage=nil; c.URLCache=nil; c.timeoutIntervalForRequest=15;
+        c.HTTPCookieStorage=nil; c.URLCache=nil; c.timeoutIntervalForRequest=90;
         session=[NSURLSession sessionWithConfiguration:c delegate:[RiriNetwork new] delegateQueue:nil];
     });
     return session;
@@ -90,22 +91,16 @@ static NSString *Origin(NSString *input) {
 }
 - (void)render {
     for(UIView *v in self.stack.arrangedSubviews) { [self.stack removeArrangedSubview:v]; [v removeFromSuperview]; }
-    [self label:[NSString stringWithFormat:@"ステップ %ld / 3", (long)MIN(self.step+1,3)]];
+    [self label:self.step==0 ? @"初回セットアップ" : @"接続確認"];
     if(self.step==0) {
         [self label:@"Ririを接続しましょう"];
-        [self label:@"受信したDMを自分のサーバーへ送り、返信を作成します。接続確認が終わるまで転送は開始しません。"];
-        [self button:@"サーバーを準備する" action:@selector(advance)];
-        [self button:@"準備済み・接続設定へ" action:@selector(connectPage)];
-    } else if(self.step==1) {
-        [self label:@"サーバーを準備"];
-        [self label:@"1. Ubuntu 22.04のVPSへセットアップZIPとcookies.jsonをアップロードします。\n\n2. ZIPを展開し、riri-vpsフォルダの中で下のコマンドを実行します。\n\n3. ドメインと自分のXの数字ID、cookies.jsonの場所を入力します。\n\n完了後、接続コードを表示してコピーしてください。"];
-        [self button:@"セットアップコマンドをコピー" action:@selector(copyInstall)];
-        [self button:@"接続コード表示コマンドをコピー" action:@selector(copyPair)];
-        [self label:@"ドメインのDNSをVPSへ向け、80・443番ポートを開けてください。サーバーの導入はVPSのコンソールで行います。"];
-        [self button:@"準備できた・接続設定へ" action:@selector(advance)];
-        self.status=[self label:@""];
+        [self label:@"受信したDMをあなたのCloudflareアカウントへ送り、AIが返信を作成します。対応するXでは自動返信します。接続確認後に開始します。"];
+        [self button:@"Cloudflareで無料セットアップ" action:@selector(cloudflare)];
+        self.status=[self label:@"ログイン・許可後に専用の処理と会話保存先を自動作成します。無料プランでは枠を使い切ると返信を停止します。有料プランのアカウントでは料金が発生する場合があります。Cloudflareの利用規約への同意やメール確認が必要な場合があります。"] ;
+        [self button:@"既存の接続先を設定" action:@selector(connectPage)];
     } else {
-        [self label:@"サーバーに接続"];
+        [self label:@"接続先の設定"];
+        [self button:@"Cloudflareで自動設定" action:@selector(cloudflare)];
         self.host=[UITextField new]; self.host.placeholder=@"https://dm.example.com"; self.host.keyboardType=UIKeyboardTypeURL;
         self.secret=[UITextField new]; self.secret.placeholder=@"接続キー"; self.secret.secureTextEntry=YES;
         for(UITextField *f in @[self.host,self.secret]) {
@@ -117,14 +112,28 @@ static NSString *Origin(NSString *input) {
         NSDictionary *saved=RiriConnection(); self.host.text=saved[@"origin"]; self.secret.text=saved[@"secret"];
         [self button:@"接続コードを貼り付け" action:@selector(pastePair)];
         self.next=[self button:@"接続を確認して保存" action:@selector(check)];
-        [self label:@"接続先とキーを確認し、Ollamaに指定モデルがあるか調べます。XへのテストDMは送りません。"];
+        [self label:@"保存先とAIが使えることを確認し、接続キーを安全に保存します。"];
         self.status=[self label:@""];
     }
 }
-- (void)advance {self.step++; [self render];}
-- (void)connectPage {self.step=2; [self render];}
-- (void)copyInstall {UIPasteboard.generalPasteboard.string=@"sudo bash deploy/setup.sh"; self.status.text=@"コピーしました。VPSのコンソールへ貼り付けてください。";}
-- (void)copyPair {UIPasteboard.generalPasteboard.string=@"sudo python3 deploy/pair.py"; self.status.text=@"コピーしました。表示される接続コードをiPhoneへコピーしてください。";}
+- (void)cloudflare {
+    if(self.busy) return;
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"自分のXの数字ID" message:@"自分の送信に返信しないために使います。@ユーザー名ではなく数字IDを入力してください。" preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f){f.keyboardType=UIKeyboardTypeNumberPad;f.placeholder=@"数字ID";f.text=RiriConnection()[@"own_user_id"];}];
+    [a addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"ログインして自動設定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        NSString *uid=a.textFields.firstObject.text;
+        if(!uid.length||uid.length>30||[uid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789"].invertedSet].location!=NSNotFound){self.status.text=@"数字IDを入力してください。";return;}
+        self.busy=YES;self.navigationItem.rightBarButtonItem.enabled=NO;self.status.text=@"Cloudflareにログイン後、接続先を作成します…";
+        RiriCloudflareBegin(self,uid,^(NSDictionary *settings,NSString *error){
+            self.busy=NO;self.navigationItem.rightBarButtonItem.enabled=YES;
+            if(!settings){self.status.text=error;return;}
+            self.step=2;[self render];self.host.text=settings[@"origin"];self.secret.text=settings[@"secret"];
+            [self check];
+        });
+    }]];[self presentViewController:a animated:YES completion:nil];
+}
+- (void)connectPage {if(self.busy) return;self.step=2; [self render];}
 - (void)pastePair {
     if(self.busy || !self.host.enabled) return;
     NSString *s=[UIPasteboard.generalPasteboard.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -161,7 +170,7 @@ static NSString *Origin(NSString *input) {
                 s.host.text=origin; s.secret.text=secret; s.host.enabled=NO; s.secret.enabled=NO;
             } else if(ok) s.status.text=@"設定を保存できませんでした。アプリの署名・Keychain権限を確認してください。";
             else if(code==403) s.status.text=@"接続キーが一致しません。コピーし直してください。";
-            else if(code==503) s.status.text=@"Ollamaまたはqwen2.5:7bの準備が完了していません。サーバーを確認してください。";
+            else if(code==503) s.status.text=@"AIを利用できません。無料枠・Cloudflareの利用開始・接続先の稼働状態を確認してください。";
             else if(code==404) s.status.text=@"サーバーをチュートリアル対応版へ更新してください。";
             else s.status.text=@"接続できませんでした。URL・証明書・サーバーの稼働状態を確認してください。";
         });

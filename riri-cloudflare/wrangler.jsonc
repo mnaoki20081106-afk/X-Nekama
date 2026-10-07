@@ -1,0 +1,1 @@
+{"name":"riri-personal","main":"worker.mjs","compatibility_date":"2026-10-07","workers_dev":true,"ai":{"binding":"AI"},"d1_databases":[{"binding":"DB","database_name":"riri-conversations","database_id":"","migrations_dir":"migrations"}],"vars":{"OWN_USER_ID":""}}

@@ -2,7 +2,7 @@ name: Riri standalone dylib
 on:
   push:
     branches: ['codex/riri-standalone-20261007']
-    paths: ['riri-tweak/**', '.github/workflows/riri-standalone.yml']
+    paths: ['riri-tweak/**', '.github/workflows/riri-standalone.yml', 'riri-cloudflare/**']
 permissions:
   contents: read
 jobs:
@@ -11,6 +11,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Backend checks
+        run: |
+          node --test riri-cloudflare/tests/*.test.mjs
+          python3 riri-cloudflare/tools/embed.py riri-tweak
       - name: Dependencies
         run: brew install make ldid
       - name: GNU Make
