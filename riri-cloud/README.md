@@ -77,3 +77,9 @@ Cloudflare cron is **every minute**, with X polling at most **every 2 minutes** 
 - GitHub Actions **Riri live Qwen dialog QA (manual, GPU billing)**: only when deliberately triggered, performs up to 20 *synthetic* Japanese DM exchanges against the real Modal GPU, measures average/p95 inference latency, checks concise answers and AI disclosure. Requires repository secrets `RIRI_MODAL_URL` and `RIRI_MODAL_SECRET` and an actual deployed Modal model. Costs real GPU credits. It **does not send X messages**.
 
 **Still untested:** X live ingress/egress, encrypted XChat, actual GPU model loading, physical iPhone behavior, invoice amount, and real conversation quality. The nonofficial X endpoints may cease to work. All cloud credentials/payment setup require owner approval; deployment not automatic.
+
+### Confirming Qwen is actually running
+
+The tweak's `/setup-check` only reports `model_ready:true` **after a real Qwen response is received**. Once Modal has been deployed and the Worker has `MODAL_URL`/`MODAL_SECRET`, visit `https://YOUR-WORKER.workers.dev/settings/`, supply `ADMIN_SECRET`, and press **Qwen接続を確認（GPU利用あり）**. This confirmation explicitly allows one billed GPU inference and stores the verified model endpoint in D1. It may take several minutes from a cold start. Merely entering an API URL does not prove that Qwen can load.
+
+The live 20-turn test is a separate, manually dispatched GitHub Action and is deliberately **not** run automatically or billed without user action. Cloudflare's scheduled Workers have a 15-minute wall-time ceiling, so jobs that exceed it need a more durable async execution approach.
