@@ -58,7 +58,7 @@ async function infer(env,msg){
  const messages=[{role:'system',content:plain(env.SYSTEM_PROMPT)||'あなたはXのDM自動応答AIです。自動応答だと尋ねられたら正直に説明します。短く自然な日本語で返してください。金銭の要求や身分の偽装をしないでください。'}];
  for(const x of history.results.reverse()){messages.push({role:'user',content:x.text});if(x.reply&&x.status==='sent')messages.push({role:'assistant',content:x.reply});}
  messages.push({role:'user',content:msg.text});
- const r=await fetch(env.MODAL_URL,{method:'POST',headers:{authorization:'Bearer '+env.MODAL_SECRET,'content-type':'application/json'},body:JSON.stringify({messages}),signal:AbortSignal.timeout(160000)});
+ const r=await fetch(env.MODAL_URL,{method:'POST',headers:{authorization:'Bearer '+env.MODAL_SECRET,'content-type':'application/json'},body:JSON.stringify({messages}),signal:AbortSignal.timeout(480000)});
  if(!r.ok)throw Error('modal_http_'+r.status);
  const d=await r.json(),reply=plain(d?.reply);
  if(!reply||reply.length>4000)throw Error('invalid_model_output');
@@ -140,7 +140,7 @@ export default {
   if(path==='/admin/approve'&&req.method==='POST'){
    if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
    let v;try{v=await body(req);}catch{return json({error:'invalid_json'},400);}
-   if(v.month!==monthJST()||!Number.isSafeInteger(v.additional_usd_cents)||v.additional_usd_cents<0||v.additional_usd_cents>800||v.confirm!==true)return json({error:'invalid_approval'},400);
+   if(v.month!==monthJST()||!Number.isSafeInteger(v.additional_usd_cents)||v.additional_usd_cents<0||v.additional_usd_cents>600||v.confirm!==true)return json({error:'invalid_approval'},400);
    await db.prepare('INSERT INTO spend(month,estimated_cents,approved_extra_cents) VALUES(?,0,?) ON CONFLICT(month) DO UPDATE SET approved_extra_cents=excluded.approved_extra_cents').bind(v.month,v.additional_usd_cents).run();
    await db.prepare("UPDATE messages SET status='queued' WHERE status='awaiting_approval'").run();
    return json({status:'approved_compute_limit',month:v.month,additional_usd_cents:v.additional_usd_cents,note:'Does not initiate or authorize PayPay transfers.'});
@@ -153,7 +153,7 @@ export default {
    if(!validMsg(v))return json({error:'invalid_fields'},400);
    if(v.sender_id===plain(env.OWN_USER_ID))return json({status:'skipped_own'});
    const created=await ingest(db,v);
-   if(created&&activeJST()&&env.AUTO_SEND_ENABLED==='true')await cycle(env);
+   // Queue now; cron processes later so the tweak request never waits for GPU cold start.
    const row=await db.prepare('SELECT status FROM messages WHERE message_id=?').bind(v.message_id).first();
    return json({status:row?.status||'unknown',message_id:v.message_id});
   }
