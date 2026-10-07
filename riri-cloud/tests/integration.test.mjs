@@ -83,3 +83,18 @@ test('budget stops before second request and waits for explicit approval',async(
 test('wrong admin key cannot inspect stored profile/memory',async()=>{
  const env=context();const res=await worker.fetch(new Request('https://worker.test/admin/memory?conversation_id=101-201',{headers:{'x-admin-secret':'wrong'}}),env);assert.equal(res.status,403);
 });
+
+test('GPU model readiness requires an explicitly confirmed real inference check',async()=>{
+ const env=context();
+ const first=await worker.fetch(new Request('https://worker.test/setup-check',{headers:{'x-bot-secret':env.BOT_SECRET}}),env);
+ assert.equal((await first.json()).model_ready,false);
+ assert.equal((await admin(env,'/admin/check-model','POST',{confirm_compute_cost:false})).status,400);
+ let calls=0;const original=globalThis.fetch;
+ globalThis.fetch=async()=>{calls++;return Response.json({reply:'こんにちは！',memory_summary:''});};
+ try{
+  const verified=await admin(env,'/admin/check-model','POST',{confirm_compute_cost:true});
+  assert.equal(verified.status,200);assert.equal(verified.json.model_ready,true);assert.equal(calls,1);
+  const ready=await worker.fetch(new Request('https://worker.test/setup-check',{headers:{'x-bot-secret':env.BOT_SECRET}}),env);
+  assert.equal((await ready.json()).model_ready,true);
+ }finally{globalThis.fetch=original;env.DB.raw.close();}
+});
