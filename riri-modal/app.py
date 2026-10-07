@@ -5,6 +5,7 @@ GPU stays off between requests; Cloudflare cron does X inbox polling.
 import os
 import hmac
 import modal
+from fastapi import Request
 
 APP_NAME = "riri-qwen38-on-demand"
 MODEL_ID = "Qwen/Qwen3.8-27B-FP8"
@@ -70,13 +71,14 @@ class QwenModel:
     secrets=[modal.Secret.from_name("riri-modal-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
-async def chat(request: dict, authorization: str = ""):
+async def chat(request: Request):
     """FastAPI parses JSON payload; authorization is an HTTP header."""
     from fastapi import HTTPException
     secret = os.environ.get("RIRI_MODAL_SECRET", "")
-    if len(secret) < 32 or not hmac.compare_digest(authorization, "Bearer " + secret):
+    if len(secret) < 32 or not hmac.compare_digest(request.headers.get("authorization", ""), "Bearer " + secret):
         raise HTTPException(status_code=403, detail="Forbidden")
-    messages = request.get("messages") if isinstance(request, dict) else None
+    payload = await request.json()
+    messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(messages, list) or not 1 <= len(messages) <= 20:
         raise HTTPException(status_code=400, detail="Invalid messages")
     for message in messages:
