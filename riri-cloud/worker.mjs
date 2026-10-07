@@ -201,7 +201,21 @@ export default {
    if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
    const month=monthJST(),budget=await db.prepare('SELECT * FROM spend WHERE month=?').bind(month).first();
    const counts=await db.prepare('SELECT status,COUNT(*) AS n FROM messages GROUP BY status').all();
-   return json({month,active:activeJST(),x_poll_enabled:env.X_POLL_ENABLED==='true',auto_send_enabled:env.AUTO_SEND_ENABLED==='true',estimated_spend_cents:budget?.estimated_cents||0,free_internal_cents:Number(env.INTERNAL_FREE_CENTS||1500),approved_extra_cents:budget?.approved_extra_cents||0,counts:counts.results});
+   return json({month,active:activeJST(),model_verified:(await setting(db,'model_verified_target',''))===env.MODAL_URL,x_poll_enabled:env.X_POLL_ENABLED==='true',auto_send_enabled:env.AUTO_SEND_ENABLED==='true',estimated_spend_cents:budget?.estimated_cents||0,free_internal_cents:Number(env.INTERNAL_FREE_CENTS||1500),approved_extra_cents:budget?.approved_extra_cents||0,counts:counts.results});
+  }
+  if(path==='/admin/check-model'&&req.method==='POST'){
+   if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
+   let v;try{v=await body(req);}catch{return json({error:'invalid_json'},400);}
+   if(v.confirm_compute_cost!==true)return json({error:'explicit_compute_consent_required'},400);
+   if(!env.MODAL_URL||!env.MODAL_SECRET)return json({error:'model_not_configured'},503);
+   if(!await reserve(env))return json({error:'approval_required'},402);
+   try{
+     const response=await fetch(env.MODAL_URL,{method:'POST',headers:{authorization:'Bearer '+env.MODAL_SECRET,'content-type':'application/json'},body:JSON.stringify({messages:[{role:'system',content:'日本語で簡潔に返してください。JSONでreplyとmemory_summaryを返してください。'},{role:'user',content:'接続確認です。こんにちは。'}]}),signal:AbortSignal.timeout(480000)});
+     if(!response.ok)return json({error:'model_http_failure',status:response.status},503);
+     const reply=modelOutput(await response.json());
+     await saveSetting(db,'model_verified_target',env.MODAL_URL);
+     return json({status:'model_verified',reply_length:reply.reply.length,model_ready:true});
+   }catch(error){return json({error:'model_unavailable',detail:String(error?.message||error).slice(0,180)},503);}
   }
   if(path==='/admin/profile'){
    if(!admin(req,env.ADMIN_SECRET))return json({error:'forbidden'},403);
@@ -249,7 +263,7 @@ export default {
    return json({status:'approved_compute_limit',month:v.month,additional_usd_cents:v.additional_usd_cents,note:'Does not initiate or authorize PayPay transfers.'});
   }
   if(!auth(req,env.BOT_SECRET))return json({error:'forbidden'},403);
-  if(path==='/setup-check'&&req.method==='GET')return json({service:'riri-bridge',mode:'cloudflare-modal',model_ready:Boolean(env.MODAL_URL&&env.MODAL_SECRET),own_user_id:plain(env.OWN_USER_ID),model:'Qwen3.8-27B-FP8'});
+  if(path==='/setup-check'&&req.method==='GET')return json({service:'riri-bridge',mode:'cloudflare-modal',model_ready:Boolean(env.MODAL_URL&&env.MODAL_SECRET&&(await setting(db,'model_verified_target',''))===env.MODAL_URL),own_user_id:plain(env.OWN_USER_ID),model:'Qwen3.8-27B-FP8'});
   if(req.method!=='POST')return json({error:'not_found'},404);
   let v;try{v=await body(req);}catch{return json({error:'invalid_json'},400);}
   if(path==='/ingest'){
