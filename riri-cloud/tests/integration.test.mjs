@@ -98,3 +98,41 @@ test('GPU model readiness requires an explicitly confirmed real inference check'
   assert.equal((await ready.json()).model_ready,true);
  }finally{globalThis.fetch=original;env.DB.raw.close();}
 });
+
+test('mock X legacy inbox → Qwen → X send exactly once even when polled twice',async()=>{
+ const env=context({X_POLL_ENABLED:'true',X_AUTH_TOKEN:'test-token',X_CT0:'test-csrf',X_WEB_BEARER:'test-bearer'});
+ env.DB.raw.prepare("INSERT INTO settings(key,value) VALUES('x_initialized','1')").run();
+ const calls=[];const original=globalThis.fetch;
+ globalThis.fetch=async(input,init={})=>{
+  const url=String(input),method=init.method||'GET';calls.push({url,method});
+  if(url.includes('inbox_initial_state'))return Response.json({inbox_initial_state:{entries:{a:{message:{id:'1001',sender_id:'201',conversation_id:'101-201',message_data:{text:'映画おすすめある？',time:DAY-120000}}}}}});
+  if(url.includes('modal.test'))return Response.json({reply:'{"reply":"コメディはいかが？","memory_summary":"映画が好き"}'});
+  if(url.includes('dm/new2.json'))return Response.json({status:'success'});
+  throw Error('unexpected_mock_url');
+ };
+ try{
+  assert.equal((await cycle(env,DAY)).generated,1);
+  assert.equal(env.DB.raw.prepare("SELECT status FROM messages WHERE message_id='1001'").get().status,'sent');
+  assert.equal((await cycle(env,DAY+120000)).generated,0);
+  assert.equal(calls.filter(x=>x.url.includes('dm/new2')).length,1);
+  assert.equal(calls.filter(x=>x.url.includes('modal.test')).length,1);
+ }finally{globalThis.fetch=original;env.DB.raw.close();}
+});
+test('failed or ambiguous X POST is never retried automatically',async()=>{
+ const env=context({X_POLL_ENABLED:'true',X_AUTH_TOKEN:'a',X_CT0:'b',X_WEB_BEARER:'c'});
+ env.DB.raw.prepare("INSERT INTO settings(key,value) VALUES('x_initialized','1')").run();
+ let sends=0;const original=globalThis.fetch;
+ globalThis.fetch=async(input)=>{
+  const u=String(input);
+  if(u.includes('inbox_initial_state'))return Response.json({inbox_initial_state:{entries:{a:{message:{id:'1001',sender_id:'201',conversation_id:'101-201',message_data:{text:'やあ',time:DAY-120000}}}}}});
+  if(u.includes('modal.test'))return Response.json({reply:'こんにちは！'});
+  if(u.includes('dm/new2')){sends++;return Response.json({error:'possibly_accepted'}, {status:502});}
+  throw Error('unexpected_mock_url');
+ };
+ try{
+  await cycle(env,DAY);
+  assert.equal(env.DB.raw.prepare("SELECT status FROM messages WHERE message_id='1001'").get().status,'uncertain');
+  await cycle(env,DAY+120000);
+  assert.equal(sends,1);
+ }finally{globalThis.fetch=original;env.DB.raw.close();}
+});
