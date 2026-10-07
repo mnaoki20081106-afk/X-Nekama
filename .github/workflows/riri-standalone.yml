@@ -38,12 +38,13 @@ jobs:
           make clean
           make FINALPACKAGE=1
           mkdir -p ../dist
-          DYLIB=$(find .theos/obj -name RiriAutoReply.dylib -type f | head -n 1)
+          DYLIB=$(find .theos/obj -name RiriAutoReply.dylib -type f ! -path '*.dSYM/*' | head -n 1)
           test -n "$DYLIB"
           cp "$DYLIB" ../dist/RiriAutoReply.dylib
           file ../dist/RiriAutoReply.dylib
           otool -L ../dist/RiriAutoReply.dylib
-          lipo -verify_arch arm64 ../dist/RiriAutoReply.dylib
+          lipo ../dist/RiriAutoReply.dylib -verify_arch arm64
+          otool -hv ../dist/RiriAutoReply.dylib | grep DYLIB
           codesign --force --sign - ../dist/RiriAutoReply.dylib
           codesign --verify ../dist/RiriAutoReply.dylib
       - uses: actions/upload-artifact@v4
