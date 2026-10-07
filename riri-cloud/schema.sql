@@ -17,3 +17,27 @@ CREATE TABLE IF NOT EXISTS spend (
   estimated_cents INTEGER NOT NULL DEFAULT 0,
   approved_extra_cents INTEGER NOT NULL DEFAULT 0
 );
+
+-- Additive schema: safe to apply repeatedly to an existing D1 database.
+CREATE TABLE IF NOT EXISTS conversation_memory (
+ conversation_id TEXT PRIMARY KEY NOT NULL,
+ summary TEXT NOT NULL,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS persona_configs (
+ scope TEXT PRIMARY KEY NOT NULL,
+ config TEXT NOT NULL,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS conversation_leases (
+ conversation_id TEXT PRIMARY KEY NOT NULL,
+ lease_until INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inference_metrics (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ conversation_id TEXT NOT NULL,
+ elapsed_ms INTEGER NOT NULL,
+ ok INTEGER NOT NULL CHECK(ok IN (0,1))
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_created ON inference_metrics(created_at);
