@@ -136,3 +136,32 @@ test('failed or ambiguous X POST is never retried automatically',async()=>{
   assert.equal(sends,1);
  }finally{globalThis.fetch=original;env.DB.raw.close();}
 });
+
+test('adaptive DM rally is ready a few seconds after latest message',async()=>{
+ const env=context({X_POLL_ENABLED:'false'});
+ const cid='101-201';
+ env.DB.raw.prepare("INSERT INTO conversation_activity(conversation_id,last_sent_ms) VALUES(?,?)").run(cid,DAY-10000);
+ const original=globalThis.fetch;let requests=0;
+ globalThis.fetch=async()=>{requests++;return Response.json({reply:'うん！',memory_summary:''})};
+ try{
+  await ingest(env,dm(77,cid,DAY-2000,'そうそう'));
+  const soon=await cycle(env,DAY);assert.equal(soon.generated,0);
+  assert.equal((await cycle(env,DAY+2499)).generated,0);
+  assert.equal((await cycle(env,DAY+2500)).generated,1);
+  assert.equal(requests,1);
+ }finally{globalThis.fetch=original;env.DB.raw.close();}
+});
+test('resumed DM waits longer and later message postpones the reply',async()=>{
+ const env=context({X_POLL_ENABLED:'false'});
+ const cid='101-201';
+ env.DB.raw.prepare("INSERT INTO conversation_activity(conversation_id,last_sent_ms) VALUES(?,?)").run(cid,DAY-3600000);
+ const original=globalThis.fetch;let requests=0;
+ globalThis.fetch=async()=>{requests++;return Response.json({reply:'また話そう',memory_summary:''})};
+ try{
+  await ingest(env,dm(77,cid,DAY-50000,'久しぶり'));
+  await ingest(env,dm(78,cid,DAY-1000,'追記だよ'));
+  assert.equal((await cycle(env,DAY+50000)).generated,0);
+  assert.equal((await cycle(env,DAY+74000)).generated,1);
+  assert.equal(requests,1);
+ }finally{globalThis.fetch=original;env.DB.raw.close();}
+});
