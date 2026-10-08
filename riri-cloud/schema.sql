@@ -41,3 +41,10 @@ CREATE TABLE IF NOT EXISTS inference_metrics (
  ok INTEGER NOT NULL CHECK(ok IN (0,1))
 );
 CREATE INDEX IF NOT EXISTS idx_metrics_created ON inference_metrics(created_at);
+
+-- Per-conversation delivery cadence. Explicit activity times keep cross-timezone handling deterministic.
+CREATE TABLE IF NOT EXISTS conversation_activity(
+ conversation_id TEXT PRIMARY KEY NOT NULL,
+ last_inbound_ms INTEGER NOT NULL DEFAULT 0,
+ last_sent_ms INTEGER NOT NULL DEFAULT 0
+);
