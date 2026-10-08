@@ -194,7 +194,9 @@ export async function cycle(env,nowMs=Date.now(),options={}){
   if(!lock)continue;
   try{await sendX(env,msg,nowMs);sent++;}catch(e){console.error('x_send_uncertain',String(e));}
  }
- const pending=(await db.prepare("SELECT * FROM messages WHERE status='queued' AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 80").all()).results;
+ const pending=options.onlyConversation
+  ?(await db.prepare("SELECT * FROM messages WHERE status='queued' AND source IN ('poll','tweak') AND conversation_id=? ORDER BY timestamp_ms ASC LIMIT 80").bind(options.onlyConversation).all()).results
+  :(await db.prepare("SELECT * FROM messages WHERE status='queued' AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 80").all()).results;
  // Get all same-conversation messages first, then compute a per-conversation deadline.
  const groups=groupReady(pending,nowMs,0,Math.max(1,Math.min(8,Number(env.MAX_GROUPS_PER_TICK)||4)));
  for(const batch of groups){
