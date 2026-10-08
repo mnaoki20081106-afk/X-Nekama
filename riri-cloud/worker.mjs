@@ -1,6 +1,7 @@
 
 // Riri Cloudflare bridge. No paid inference or X write without explicit opt-in.
 import {DEFAULT_PERSONA,validatePersona,buildConversation,groupReady,modelOutput} from './conversation.mjs';
+import {dueForBatch,validPace} from './cadence.mjs';
 const json=(v,status=200)=>new Response(JSON.stringify(v),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}});
 const plain=v=>String(v??'').trim();
 const required=(s)=>typeof s==='string'&&s.length>=32;
@@ -50,6 +51,9 @@ async function reserve(env){
 async function ingest(db,v,source='tweak'){
  if(!validMsg(v))return json({error:'invalid_fields'},400);
  const q=await db.prepare("INSERT OR IGNORE INTO messages(message_id,sender_id,conversation_id,text,timestamp_ms,source,status) VALUES(?,?,?,?,?,?,'queued')").bind(v.message_id,v.sender_id,v.conversation_id,v.text,v.timestamp_ms,source).run();
+ if(q.meta.changes){
+  await db.prepare("INSERT INTO conversation_activity(conversation_id,last_inbound_ms) VALUES(?,?) ON CONFLICT(conversation_id) DO UPDATE SET last_inbound_ms=MAX(conversation_activity.last_inbound_ms,excluded.last_inbound_ms)").bind(v.conversation_id,v.timestamp_ms).run();
+ }
  return Boolean(q.meta.changes);
 }
 const validConversationId=(v)=>typeof v==='string'&&/^[0-9-]{1,120}$/.test(v);
@@ -124,37 +128,88 @@ async function pollX(env){
  for(const msg of messages){if(await ingest(env.DB,msg,'poll'))count++;}
  return count;
 }
-async function sendX(env,msg){
+async function sendX(env,msg,nowMs=Date.now()){
  // No automatic retries on 429/5xx/timeouts: a remote send may have succeeded.
  const payload={cards_platform:'Web-12',conversation_id:msg.conversation_id,dm_users:false,include_cards:1,include_quote_count:true,recipient_ids:false,text:msg.reply};
  try{
   await xRequest(env,'https://x.com/i/api/1.1/dm/new2.json',{method:'POST',body:JSON.stringify(payload)});
   await env.DB.prepare("UPDATE messages SET status='sent',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='claimed'").bind(msg.message_id).run();
+  await env.DB.prepare("INSERT INTO conversation_activity(conversation_id,last_sent_ms) VALUES(?,?) ON CONFLICT(conversation_id) DO UPDATE SET last_sent_ms=MAX(conversation_activity.last_sent_ms,excluded.last_sent_ms)").bind(msg.conversation_id,nowMs).run();
   return 'sent';
  }catch(error){
   await env.DB.prepare("UPDATE messages SET status='uncertain',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='claimed'").bind(msg.message_id).run();
   throw error;
  }
 }
-export async function cycle(env,nowMs=Date.now()){
+async function armConversation(env,cid,whenMs){
+ if(!env.RIRI_TIMERS||!validConversationId(cid))return false;
+ const id=env.RIRI_TIMERS.idFromName(cid);
+ const timer=env.RIRI_TIMERS.get(id);
+ const r=await timer.fetch('https://riri.internal/arm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({conversation_id:cid,when_ms:Math.max(Date.now()+1000,Math.round(whenMs))})});
+ if(!r.ok)throw Error('timer_arm_failed');
+ return true;
+}
+export class ConversationTimer{
+ constructor(ctx,env){this.ctx=ctx;this.env=env;}
+ async fetch(request){
+  if(new URL(request.url).pathname!=='/arm'||request.method!=='POST')return new Response('not_found',{status:404});
+  const v=await request.json();
+  if(!validConversationId(v.conversation_id)||!Number.isSafeInteger(v.when_ms))return new Response('invalid',{status:400});
+  const original=await this.ctx.storage.get('conversation_id');
+  if(original&&original!==v.conversation_id)return new Response('conversation_mismatch',{status:409});
+  await this.ctx.storage.put('conversation_id',v.conversation_id);
+  await this.ctx.storage.setAlarm(v.when_ms);
+  return new Response('armed');
+ }
+ async alarm(){
+  const cid=await this.ctx.storage.get('conversation_id');
+  if(!validConversationId(cid))return;
+  try{
+   const result=await cycle(this.env,Date.now(),{onlyConversation:cid,skipPoll:true});
+   // A newer inbound message or an inflight draft can require a later wakeup.
+   const pending=(await this.env.DB.prepare("SELECT MAX(timestamp_ms) AS newest FROM messages WHERE conversation_id=? AND status='queued'").bind(cid).first());
+   if(pending?.newest&&this.env.AUTO_SEND_ENABLED==='true'){
+    const activity=await this.env.DB.prepare('SELECT last_sent_ms,last_inbound_ms FROM conversation_activity WHERE conversation_id=?').bind(cid).first()||{};
+    const mode=validPace(this.env.DM_PACE)?this.env.DM_PACE:'adaptive';
+    const next=dueForBatch([{timestamp_ms:pending.newest}],activity,{mode},Date.now());
+    // No busy-spin when a generation is running; cron also catches stalled jobs.
+    await this.ctx.storage.setAlarm(Math.max(Date.now()+15000,next.at));
+   }
+   return result;
+  }catch(e){console.error('riri_alarm_error',String(e));await this.ctx.storage.setAlarm(Date.now()+60000);}
+ }
+}
+export async function cycle(env,nowMs=Date.now(),options={}){
  if(!activeJST(new Date(nowMs))||env.AUTO_SEND_ENABLED!=='true')return {status:'inactive'};
  let found=0;
  const pollEvery=Math.max(1,Math.min(10,Number(env.X_POLL_EVERY_MINUTES)||2));
- if(Math.floor(nowMs/60000)%pollEvery===0)found=await pollX(env);
+ if(!options.skipPoll&&Math.floor(nowMs/60000)%pollEvery===0)found=await pollX(env);
  const db=env.DB;
  let generated=0,sent=0,blocked=0,waiting=0;
  const drafts=(await db.prepare("SELECT * FROM messages WHERE status='draft' AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 4").all()).results;
  for(const msg of drafts){
+  if(options.onlyConversation&&msg.conversation_id!==options.onlyConversation)continue;
   if(env.X_POLL_ENABLED!=='true')continue;
   const lock=await db.prepare("UPDATE messages SET status='claimed',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='draft' RETURNING message_id").bind(msg.message_id).first();
   if(!lock)continue;
-  try{await sendX(env,msg);sent++;}catch(e){console.error('x_send_uncertain',String(e));}
+  try{await sendX(env,msg,nowMs);sent++;}catch(e){console.error('x_send_uncertain',String(e));}
  }
  const pending=(await db.prepare("SELECT * FROM messages WHERE status='queued' AND source IN ('poll','tweak') ORDER BY timestamp_ms ASC LIMIT 80").all()).results;
- const debounce=Math.max(15000,Math.min(300000,Number(env.DM_QUIET_MS)||60000));
- const groups=groupReady(pending,nowMs,debounce,Math.max(1,Math.min(4,Number(env.MAX_GROUPS_PER_TICK)||2)));
+ // Get all same-conversation messages first, then compute a per-conversation deadline.
+ const groups=groupReady(pending,nowMs,0,Math.max(1,Math.min(8,Number(env.MAX_GROUPS_PER_TICK)||4)));
  for(const batch of groups){
   const cid=batch[0].conversation_id;
+  if(options.onlyConversation&&cid!==options.onlyConversation)continue;
+  const activity=await db.prepare('SELECT last_sent_ms,last_inbound_ms FROM conversation_activity WHERE conversation_id=?').bind(cid).first()||{};
+  const mode=validPace(env.DM_PACE)?env.DM_PACE:'adaptive';
+  const due=dueForBatch(batch,activity,{mode},nowMs);
+  if(!due.ready){
+    if(env.RIRI_TIMERS&&!options.onlyConversation){
+      try{await armConversation(env,cid,due.at);}catch(e){console.error('riri_timer_arm',String(e));}
+    }
+    waiting++;
+    continue;
+  }
   if(!(await acquireLease(db,cid,nowMs)))continue;
   try{
    // A queued conversation must not overtake a previous draft or in-flight answer.
@@ -175,10 +230,16 @@ export async function cycle(env,nowMs=Date.now()){
     }
     if(!ok){for(const id of ids)await db.prepare("UPDATE messages SET status='needs_review' WHERE message_id=? AND status='generating'").bind(id).run();continue;}
     generated++;
+    // Messages arriving during inference make the generated draft stale.
+    const newer=await db.prepare("SELECT message_id FROM messages WHERE conversation_id=? AND status='queued' AND timestamp_ms>? LIMIT 1").bind(cid,batch.at(-1).timestamp_ms).first();
+    if(newer){
+      await db.prepare("UPDATE messages SET status='superseded',updated_at=CURRENT_TIMESTAMP WHERE message_id=? AND status='draft'").bind(batch.at(-1).message_id).run();
+      continue;
+    }
     if(env.X_POLL_ENABLED==='true'){
       const last=await db.prepare('SELECT * FROM messages WHERE message_id=?').bind(batch.at(-1).message_id).first();
       const claimed=await db.prepare("UPDATE messages SET status='claimed' WHERE message_id=? AND status='draft' RETURNING message_id").bind(last.message_id).first();
-      if(claimed){try{await sendX(env,last);sent++;}catch(e){console.error('x_send_uncertain',String(e));}}
+      if(claimed){try{await sendX(env,last,nowMs);sent++;}catch(e){console.error('x_send_uncertain',String(e));}}
     }
    }catch(e){
     console.error('generate_failed',String(e));
@@ -270,7 +331,13 @@ export default {
    if(!validMsg(v))return json({error:'invalid_fields'},400);
    if(v.sender_id===plain(env.OWN_USER_ID))return json({status:'skipped_own'});
    const created=await ingest(db,v);
-   // Queue now; cron processes later so the tweak request never waits for GPU cold start.
+   // Wake a per-conversation alarm in seconds when the device pushes an event.
+   // Do not hold a tweak request open for a GPU cold-start.
+   if(created&&activeJST()&&env.AUTO_SEND_ENABLED==='true'&&env.RIRI_TIMERS){
+     const activity=await db.prepare('SELECT last_sent_ms,last_inbound_ms FROM conversation_activity WHERE conversation_id=?').bind(v.conversation_id).first()||{};
+     const due=dueForBatch([v],activity,{mode:env.DM_PACE||'adaptive'},Date.now());
+     try{await armConversation(env,v.conversation_id,due.at);}catch(e){console.error('riri_timer_arm',String(e));}
+   }
    const row=await db.prepare('SELECT status FROM messages WHERE message_id=?').bind(v.message_id).first();
    return json({status:row?.status||'unknown',message_id:v.message_id});
   }
