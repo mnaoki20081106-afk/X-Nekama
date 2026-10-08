@@ -83,3 +83,19 @@ Cloudflare cron is **every minute**, with X polling at most **every 2 minutes** 
 The tweak's `/setup-check` only reports `model_ready:true` **after a real Qwen response is received**. Once Modal has been deployed and the Worker has `MODAL_URL`/`MODAL_SECRET`, visit `https://YOUR-WORKER.workers.dev/settings/`, supply `ADMIN_SECRET`, and press **Qwen接続を確認（GPU利用あり）**. This confirmation explicitly allows one billed GPU inference and stores the verified model endpoint in D1. It may take several minutes from a cold start. Merely entering an API URL does not prove that Qwen can load.
 
 The live 20-turn test is a separate, manually dispatched GitHub Action and is deliberately **not** run automatically or billed without user action. Cloudflare's scheduled Workers have a 15-minute wall-time ceiling, so jobs that exceed it need a more durable async execution approach.
+
+## Adaptive conversation cadence (not artificial human impersonation)
+
+The reply engine now computes timing for each conversation from its last successfully submitted answer, instead of requiring a fixed 60-second pause after every DM. `riri-cloud/cadence.mjs` is pure and unit-tested.
+
+| `DM_PACE` mode | Within four minutes of last sent message | New conversation | Returning after ≥35 minutes |
+|---|---:|---:|---:|
+| `adaptive` (default) | 4.5 sec | 18 sec | 75 sec |
+| `quick` | 2.5 sec | 8 sec | 30 sec |
+| `relaxed` | 12 sec | 45 sec | 135 sec |
+
+These are *minimum quiet intervals between incoming messages and starting inference*. They are not delivery SLAs. GPU cold start, model generation, X detection and network latency are additional and may take minutes. Natural dialogue quality depends on actual model evaluation; the app does not impersonate a human.
+
+The Worker contains an optional `ConversationTimer` Durable Object for alarm-based wakeups triggered by the tweak's `/ingest` event. **Important: Durable Object deployment binding is not yet configured in the current `wrangler.toml`; therefore sub-minute wakeups are NOT ACTIVE in a normal deployment.** The 1-minute cron remains the fallback, and X-side legacy web polling at ~2-minute intervals cannot detect a DM within seconds while the app is closed. Cloudflare Workers Free supports SQLite-backed Durable Objects, including alarms, but availability, accounting and live operation need verification. Do not claim a 3-second end-to-end service until the binding is configured and a real X/Modal test passes.
+
+Uncertain X sends are never automatically replayed; per-conversation leases prevent concurrent generation. Inference is queued and budgets require explicit user permission before increasing paid usage. No scheduled test runs billable GPU without an explicit user action.
