@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import worker,{cycle} from '../worker.mjs';
+import worker,{cycle,ConversationTimer} from '../worker.mjs';
 const ddl=readFileSync(new URL('../schema.sql',import.meta.url),'utf8');
 const DAY=new Date('2026-10-08T12:02:00+09:00').getTime();
 function makeDB(){
@@ -164,4 +164,15 @@ test('resumed DM waits longer and later message postpones the reply',async()=>{
   assert.equal((await cycle(env,DAY+74000)).generated,1);
   assert.equal(requests,1);
  }finally{globalThis.fetch=original;env.DB.raw.close();}
+});
+
+test('private durable timer records a single conversation alarm and rejects identity switch',async()=>{
+ const values=new Map();let next=null;
+ const storage={async get(k){return values.get(k)},async put(k,v){values.set(k,v)},async setAlarm(t){next=t}};
+ const timer=new ConversationTimer({storage},{});
+ const req=(cid,when)=>new Request('https://riri.internal/arm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({conversation_id:cid,when_ms:when})});
+ assert.equal((await timer.fetch(req('101-201',DAY+5000))).status,200);
+ assert.equal(next,DAY+5000);
+ assert.equal((await timer.fetch(req('101-202',DAY+8000))).status,409);
+ assert.equal(next,DAY+5000);
 });
