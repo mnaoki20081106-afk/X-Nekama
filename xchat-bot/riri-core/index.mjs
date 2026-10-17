@@ -3,6 +3,7 @@
  * デフォルトLLM: Cloudflare Workers AI @cf/qwen/qwen3.8-27b
  * 金銭のやり取りはPayPayのみ。他は優しく断る。
  * 会話ログをLoRA用データセットとして自動書き出す。
+ * 設定API・遅延返信・PayPayリンク受け取りスタブ対応。
  */
 
 import http from 'node:http';
@@ -13,6 +14,7 @@ import { createHash } from 'node:crypto';
 const PORT = Number(process.env.RIRI_PORT || 3020);
 const DATA_DIR = process.env.RIRI_DATA || './data/riri';
 const LORA_DIR = path.join(DATA_DIR, 'lora');
+const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
@@ -29,7 +31,9 @@ const DEFAULT_CONFIG = {
   activity_hours: { start: 10, end: 23 },
   burst_chance: 0.12,
   busy_duration_ms: 2 * 60 * 60 * 1000,
-  max_delay_ms: 6 * 60 * 60 * 1000
+  max_delay_ms: 6 * 60 * 60 * 1000,
+  paypay_phone: '',
+  paypay_password: ''
 };
 
 const DEATH_PATTERNS = [
@@ -102,11 +106,27 @@ class RiriCore {
   constructor() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.mkdirSync(LORA_DIR, { recursive: true });
-    this.config = { ...DEFAULT_CONFIG };
+    this.config = this._loadConfig();
     this.store = new Map();
     this._load();
-    // 定期的にLoRA用データを書き出す
     setInterval(() => this.exportLoraDataset(), 30 * 60 * 1000);
+  }
+
+  _loadConfig() {
+    try {
+      if (fs.existsSync(CONFIG_PATH)) return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
+    } catch {}
+    return { ...DEFAULT_CONFIG };
+  }
+
+  _saveConfig() {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(this.config, null, 2));
+  }
+
+  updateConfig(patch) {
+    Object.assign(this.config, patch);
+    this._saveConfig();
+    return this.config;
   }
 
   _path(id) {
@@ -115,7 +135,7 @@ class RiriCore {
   }
 
   _load() {
-    for (const f of fs.readdirSync(DATA_DIR).filter(x => x.endsWith('.json'))) {
+    for (const f of fs.readdirSync(DATA_DIR).filter(x => x.endsWith('.json') && x !== 'config.json')) {
       try {
         const raw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
         if (raw.id) this.store.set(raw.id, new Relation(raw.id, raw));
@@ -158,6 +178,15 @@ class RiriCore {
     }
   }
 
+  async receivePayPay(url) {
+    // PayPaython-mobile 連携スタブ
+    // 実際の受け取りは別プロセスまたは環境変数でトークンを渡して呼ぶ
+    console.log('[PayPay] link received:', url);
+    if (!this.config.paypay_phone) return { ok: false, reason: 'paypay not configured' };
+    // TODO: spawn python or call external service with PayPaython-mobile
+    return { ok: true, received: url };
+  }
+
   async decide(text, authorId) {
     const now = Date.now();
     const rel = this.get(authorId || createHash('sha1').update(text).digest('hex').slice(0, 12));
@@ -183,7 +212,10 @@ class RiriCore {
 
     if (PAYPAY_LINK.test(text)) {
       const urls = text.match(/https?:\/\/[^\s]+paypay[^\s]*/gi) || [];
-      rel.paypayLinks.push(...urls.map(u => ({ url: u, at: now })));
+      for (const u of urls) {
+        rel.paypayLinks.push({ url: u, at: now });
+        this.receivePayPay(u).catch(()=>{});
+      }
     }
 
     if (TAKER_RE.test(text)) rel.takerFlags++;
@@ -210,7 +242,6 @@ class RiriCore {
     this._save(rel);
 
     const reply = await this._generate(rel, text);
-    // 返信後にも履歴に追加（LoRA用）
     rel.history.push({ at: now, text: reply.slice(0, 200) });
     this._save(rel);
 
@@ -278,7 +309,9 @@ class RiriCore {
 const core = new RiriCore();
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'POST' && req.url === '/reply') {
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+  if (req.method === 'POST' && url.pathname === '/reply') {
     let body = '';
     for await (const c of req) body += c;
     try {
@@ -297,15 +330,37 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
-  if (req.url === '/health') {
+
+  if (req.method === 'GET' && url.pathname === '/config') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(core.config));
+  }
+
+  if (req.method === 'POST' && url.pathname === '/config') {
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const patch = JSON.parse(body);
+      const updated = core.updateConfig(patch);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(400); res.end(JSON.stringify({ error: String(e.message) }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, service: 'riri-core', model: DEFAULT_MODEL }));
   }
-  if (req.url === '/export-lora') {
+
+  if (url.pathname === '/export-lora') {
     core.exportLoraDataset();
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true }));
   }
+
   res.writeHead(404); res.end();
 });
 
