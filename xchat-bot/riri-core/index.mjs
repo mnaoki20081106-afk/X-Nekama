@@ -1,10 +1,7 @@
 /**
  * RiriCore — 人格・段階・記憶・人間らしい可用性を持つ返信エンジン
- * XCHAT_REPLY_URL から呼ばれる前提で動作。
- * 人格名・口調の細部は設定から注入可能（ハードコードしない）。
- *
  * デフォルトLLM: Cloudflare Workers AI @cf/qwen/qwen3.8-27b
- * (日本語の自然さ優先、毎日無料Neurons内で現実的)
+ * 金銭のやり取りはPayPayのみ。他は優しく断る。
  */
 
 import http from 'node:http';
@@ -15,7 +12,6 @@ import { createHash } from 'node:crypto';
 const PORT = Number(process.env.RIRI_PORT || 3020);
 const DATA_DIR = process.env.RIRI_DATA || './data/riri';
 
-// Cloudflare Workers AI デフォルト
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 const DEFAULT_MODEL = '@cf/qwen/qwen3.8-27b';
@@ -25,17 +21,14 @@ const LLM_URL = process.env.RIRI_LLM_URL || (
     : null
 );
 
-// ─── 設定（IPA管理画面から上書き可能） ───
 const DEFAULT_CONFIG = {
   character_name: 'りり',
   first_person: 'わたし',
-  activity_hours: { start: 10, end: 23 }, // 目安。絶対ではない
+  activity_hours: { start: 10, end: 23 },
   burst_chance: 0.12,
   busy_duration_ms: 2 * 60 * 60 * 1000,
   max_delay_ms: 6 * 60 * 60 * 1000
 };
-
-const STAGES = ['trust', 'worry_seed', 'money_hint', 'money_ask', 'aftercare', 'fade'];
 
 const DEATH_PATTERNS = [
   { re: /弁護士|法律事務所/, reply: '私この話おぢにだから話せたのになんで弁護士とか知らない人に言わなきゃいけないの？それに弁護士なんてお金儲けの考えだし…' },
@@ -45,6 +38,8 @@ const DEATH_PATTERNS = [
   { re: /お金目当て|金目当て|金欲し/, reply: 'え、どういうこと？そんなわけないよね。おぢが話してって言ってくれたから全部話したのになんでそうなるの？なんかすごい悲しい' }
 ];
 
+const NON_PAYPAY_MONEY = /銀行|振込|口座番号|通帳|ラインペイ|line pay|キャッシュ|現金|手渡し|金庫|郵便局|ユニオンペイ|union pay|クレジットカード|カード決済/;
+const PAYPAY_LINK = /paypay\.ne\.jp|pay\.paypay/;
 const TAKER_RE = /会いたい会いたい|体|写真送|俺の方が|自慢|上から|タメ口いきなり|エロ/;
 const GIVER_RE = /寂しい|癒|話を聞いて|一人|夢がない|趣味がない|仕事だけ/;
 
@@ -61,13 +56,15 @@ class Relation {
     this.busyUntil = raw.busyUntil || 0;
     this.history = raw.history || [];
     this.notes = raw.notes || '';
+    this.paypayLinks = raw.paypayLinks || [];
   }
   toJSON() {
     return {
       stage: this.stage, msgCount: this.msgCount, trustScore: this.trustScore,
       giverScore: this.giverScore, takerFlags: this.takerFlags,
       lastReplyAt: this.lastReplyAt, pendingUntil: this.pendingUntil,
-      busyUntil: this.busyUntil, history: this.history.slice(-20), notes: this.notes
+      busyUntil: this.busyUntil, history: this.history.slice(-20), notes: this.notes,
+      paypayLinks: this.paypayLinks.slice(-10)
     };
   }
 }
@@ -94,7 +91,7 @@ function advanceStage(rel, text) {
   if (rel.stage === 'trust' && rel.msgCount >= 10) return 'worry_seed';
   if (rel.stage === 'worry_seed' && /どうした|大丈夫|なにかあった|心配/.test(text)) return 'money_hint';
   if (rel.stage === 'money_hint' && /いくら|なんとか|助ける|力にな|お金/.test(text)) return 'money_ask';
-  if (rel.stage === 'money_ask' && /振込|口座|paypay|line pay|渡す|あげる/.test(text)) return 'aftercare';
+  if (rel.stage === 'money_ask' && (PAYPAY_LINK.test(text) || /あげる|渡す/.test(text))) return 'aftercare';
   if (rel.stage === 'aftercare' && Date.now() - rel.lastReplyAt > 25 * 24 * 60 * 60 * 1000) return 'money_hint';
   return rel.stage;
 }
@@ -134,6 +131,7 @@ class RiriCore {
     const now = Date.now();
     const rel = this.get(authorId || createHash('sha1').update(text).digest('hex').slice(0, 12));
 
+    // 死の言葉
     for (const d of DEATH_PATTERNS) {
       if (d.re.test(text)) {
         rel.msgCount++;
@@ -141,6 +139,24 @@ class RiriCore {
         this._save(rel);
         return { reply: d.reply, delayed: false };
       }
+    }
+
+    // PayPay以外の金銭は優しく断る
+    if (NON_PAYPAY_MONEY.test(text) && !PAYPAY_LINK.test(text)) {
+      rel.msgCount++;
+      rel.lastReplyAt = now;
+      this._save(rel);
+      return {
+        reply: 'ごめんね…お金のことはPayPayだけにしてもらえると安心で…。銀行とか他の方法だとちょっと不安ですぎて…。おぢには言いたいけど、PayPayのリンクだけにしてくれたらうれしいな。',
+        delayed: false
+      };
+    }
+
+    // PayPayリンク検知（後でPayPaython-mobileで処理）
+    if (PAYPAY_LINK.test(text)) {
+      const urls = text.match(/https?:\/\/[^\s]+paypay[^\s]*/gi) || [];
+      rel.paypayLinks.push(...urls.map(u => ({ url: u, at: now })));
+      // TODO: PayPaython-mobile で受け取り処理を呼ぶ
     }
 
     if (TAKER_RE.test(text)) rel.takerFlags++;
@@ -210,6 +226,7 @@ class RiriCore {
 現在の段階: ${rel.stage}
 直近の往復: ${rel.history.slice(-5).map(h => h.text).join(' / ')}
 自分からお金を要求しない。おぢ側から「助けたい」と言わせる。
+金銭のやり取りはPayPayのみ。銀行や他の方法を言われたら優しく断る。
 短めに自然な日本語で返信してください。`;
   }
 
