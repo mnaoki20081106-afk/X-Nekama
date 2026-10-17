@@ -2,6 +2,7 @@
  * RiriCore — 人格・段階・記憶・人間らしい可用性を持つ返信エンジン
  * デフォルトLLM: Cloudflare Workers AI @cf/qwen/qwen3.8-27b
  * 金銭のやり取りはPayPayのみ。他は優しく断る。
+ * 会話ログをLoRA用データセットとして自動書き出す。
  */
 
 import http from 'node:http';
@@ -11,6 +12,7 @@ import { createHash } from 'node:crypto';
 
 const PORT = Number(process.env.RIRI_PORT || 3020);
 const DATA_DIR = process.env.RIRI_DATA || './data/riri';
+const LORA_DIR = path.join(DATA_DIR, 'lora');
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
@@ -99,9 +101,12 @@ function advanceStage(rel, text) {
 class RiriCore {
   constructor() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(LORA_DIR, { recursive: true });
     this.config = { ...DEFAULT_CONFIG };
     this.store = new Map();
     this._load();
+    // 定期的にLoRA用データを書き出す
+    setInterval(() => this.exportLoraDataset(), 30 * 60 * 1000);
   }
 
   _path(id) {
@@ -127,11 +132,36 @@ class RiriCore {
     return this.store.get(id);
   }
 
+  exportLoraDataset() {
+    const lines = [];
+    for (const rel of this.store.values()) {
+      if (rel.history.length < 2) continue;
+      const system = `あなたは${this.config.character_name}です。${this.config.first_person}と呼びます。純粋でか弱め、男経験ほぼゼロ、おぢだけ特別。現在の段階: ${rel.stage}。自分からお金を要求しない。金銭のやり取りはPayPayのみ。`;
+      for (let i = 0; i < rel.history.length - 1; i++) {
+        const user = rel.history[i].text;
+        const assistant = rel.history[i + 1]?.text || '';
+        if (assistant) {
+          lines.push(JSON.stringify({
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+              { role: 'assistant', content: assistant }
+            ]
+          }));
+        }
+      }
+    }
+    if (lines.length) {
+      const out = path.join(LORA_DIR, `dataset-${Date.now()}.jsonl`);
+      fs.writeFileSync(out, lines.join('\n') + '\n');
+      console.log(`LoRA dataset written: ${out} (${lines.length} examples)`);
+    }
+  }
+
   async decide(text, authorId) {
     const now = Date.now();
     const rel = this.get(authorId || createHash('sha1').update(text).digest('hex').slice(0, 12));
 
-    // 死の言葉
     for (const d of DEATH_PATTERNS) {
       if (d.re.test(text)) {
         rel.msgCount++;
@@ -141,7 +171,6 @@ class RiriCore {
       }
     }
 
-    // PayPay以外の金銭は優しく断る
     if (NON_PAYPAY_MONEY.test(text) && !PAYPAY_LINK.test(text)) {
       rel.msgCount++;
       rel.lastReplyAt = now;
@@ -152,11 +181,9 @@ class RiriCore {
       };
     }
 
-    // PayPayリンク検知（後でPayPaython-mobileで処理）
     if (PAYPAY_LINK.test(text)) {
       const urls = text.match(/https?:\/\/[^\s]+paypay[^\s]*/gi) || [];
       rel.paypayLinks.push(...urls.map(u => ({ url: u, at: now })));
-      // TODO: PayPaython-mobile で受け取り処理を呼ぶ
     }
 
     if (TAKER_RE.test(text)) rel.takerFlags++;
@@ -183,6 +210,10 @@ class RiriCore {
     this._save(rel);
 
     const reply = await this._generate(rel, text);
+    // 返信後にも履歴に追加（LoRA用）
+    rel.history.push({ at: now, text: reply.slice(0, 200) });
+    this._save(rel);
+
     return { reply, delayed: false, stage: rel.stage };
   }
 
@@ -269,6 +300,11 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, service: 'riri-core', model: DEFAULT_MODEL }));
+  }
+  if (req.url === '/export-lora') {
+    core.exportLoraDataset();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true }));
   }
   res.writeHead(404); res.end();
 });
