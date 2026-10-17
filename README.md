@@ -2,6 +2,36 @@
 
 架空AIキャラクターのX運用を補助するツールです。
 
+## 現在の状態（2026-10）
+
+### 方針
+- DM自動返信は `xchat-bot` が担当
+- 返信生成は `xchat-bot/riri-core`（人格・段階・記憶・人間らしい可用性）
+- IPA側は設定画面でURLを入れるだけ（ネイティブフックは補助）
+- Login Fix方式で改造IPAのログインを回避
+- 金銭のやり取りはPayPayのみ（他は優しく断る）
+- 会話ログはLoRA用に自動書き出し
+
+### 実装済み
+- RiriCore（段階・可用性・PayPay拒否・LoRAエクスポート）
+- xchat-bot → RiriCore の連携（`XCHAT_REPLY_URL`）
+- IPA側RiriCoreClient・DMObserver・DMSenderスタブ
+- Login Fix手順をREADMEに追記
+- Cloudflare Worker用コード（`cloudflare-worker/`）
+
+### 未実装 / 残業務
+- クラウドへの本番デプロイ（Cloudflare Workers）
+- X Webhookの設定
+- IPA管理画面の設定UI
+- 実機でのDM送受信確認
+- PayPaython-mobileによる実際の受け取り処理
+
+### クラウドデプロイ
+`cloudflare-worker/` をCloudflareダッシュボードからGit連携でデプロイ可能。
+取得したURLを `XCHAT_REPLY_URL` に設定すれば動く。
+
+---
+
 利用者ごとに自分のCloudflareアカウントへサーバーを配置し、アプリの「Cloudflare連携・接続先」から利用できます。[個人Cloudflareの連携手順](docs/PERSONAL_CLOUDFLARE_JA.md) を参照してください。
 
 ## VPN必須のサーバー予約投稿（最新）
@@ -165,7 +195,6 @@ Xパスワードは接続処理時だけ使い、保存しません。
 - XActions画像アップロードのINIT/APPEND/FINALIZE回帰テスト
 - 本文フィンガープリント
 
-
 ## Deploy to Cloudflare ボタン
 
 一般公開時はCloudflare公式の **Deploy to Cloudflare** ボタンを第一導線にします。なお、予約自動投稿を有効にするにはデプロイ後に `X_EGRESS_URL` と `X_EGRESS_TOKEN` の設定が必要です。
@@ -181,7 +210,6 @@ Xパスワードは接続処理時だけ使い、保存しません。
 現在の開発repositoryは過去commit metadataに個人メールが含まれるため、**配布用ボタンはクリーンrepo作成後に有効化**します。
 
 ボタン方式で問題が起きた場合は `docs/CLOUDFLARE_SETUP_JA.md` の完全自動セットアップスクリプトを使用できます。
-
 
 ## XChat DM自動返信（オプション）
 
